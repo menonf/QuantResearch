@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Data never goes in git: raw vendor files, local research caches, notebook outputs of data
+data/
+
+# Notebooks: keep sources, not checkpoints
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Local settings for VS Code kernels (database choice - never secrets, which stay in the keyring)
+.env

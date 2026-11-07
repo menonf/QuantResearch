@@ -1,0 +1,101 @@
+[project]
+name = "equity-research"
+version = "0.1.0"
+description = "Vendor-neutral, point-in-time equity research and backtesting"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.14",
+    "arch>=8.0.0",
+    "duckdb>=1.1",
+    "keyring>=25",
+    "lseg-data>=2.1.1",
+    "numpy>=2.1",
+    "pandas>=2.2",
+    "pyarrow>=18",
+    "pycountry>=26.2.16",
+    "pyodbc>=5.2",
+    "requests>=2.32",
+    "scikit-learn>=1.5",
+    "sqlalchemy>=2.0.36",
+    "statsmodels>=0.15.0",
+    "typer>=0.15",
+]
+
+[project.scripts]
+eqr = "equity_research.cli:app"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13",
+    "pandas-stubs>=2.2",
+    "pytest>=8.3",
+    "ruff>=0.8",
+    "types-requests>=2.32",
+]
+notebooks = [
+    "ipykernel>=6.29",
+    "matplotlib>=3.9",
+    "nbformat>=5.10",
+    "nbclient>=0.10",
+]
+vendors = [
+    "norgatedata>=1.0.77",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/equity_research"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # import order
+    "B",             # bugbear
+    "UP",            # modern syntax
+    "N",             # naming
+    "SIM",           # simplifications
+    "PL",            # pylint subset
+    "RUF",
+    "D",             # docstrings
+    "PD",            # pandas idioms
+]
+ignore = [
+    "D105", "D107",  # magic methods / __init__ need no docstring
+    "D203", "D213",  # one docstring style
+    "PLR0913",       # many arguments is fine for explicit, keyword-only APIs
+    "PLR2004",       # magic values in tests and small thresholds
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D", "PLR2004", "PLR0917", "S101"]
+"migrations/**" = ["D", "N999"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+mypy_path = "src"
+files = ["src/equity_research", "tests"]  # the tests are code too
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["pyodbc", "duckdb.*", "pyarrow.*", "keyring.*", "lseg.*", "norgatedata.*", "pycountry.*", "sklearn.*", "statsmodels.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: needs the database (deselect with -m 'not integration')",
+]
+addopts = "-m 'not integration'"

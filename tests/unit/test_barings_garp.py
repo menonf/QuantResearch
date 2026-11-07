@@ -1,0 +1,234 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from equity_research.research import barings_garp as bg
+from equity_research.research.barings_estimates import ESTIMATE_FACTORS
+from equity_research.research.gems_math import growth_piecewise
+
+DAY = pd.Timestamp("2015-06-30")
+DATES = pd.DatetimeIndex([DAY])
+
+
+def _frame(values: list[float]) -> pd.DataFrame:
+    return pd.DataFrame([values], index=DATES, columns=list(range(1, len(values) + 1)))
+
+
+def test_growth_follows_productions_sign_rules() -> None:
+    past = _frame([2.0, 2.0, 0.0, 0.0, -2.0, -2.0, -2.0, 2.0, np.nan])
+    now = _frame([3.0, -1.0, 1.0, -1.0, 1.0, -1.0, -3.0, 0.0, 1.0])
+    one_year = growth_piecewise(now, past).iloc[0].tolist()
+    assert one_year[:3] == [0.5, -1.0, 1.0]  # up by half; into a loss; from zero to a profit
+    assert one_year[3:5] == [-1.0, 1.5]  # from zero to a loss; from a loss to a profit: the growth itself
+    assert one_year[5] == pytest.approx(0.5)  # a smaller loss: (c - p) / |p|
+    assert one_year[6] == pytest.approx(-0.5)
+    assert one_year[7] == -1.0 and np.isnan(one_year[8])  # profit to nothing; a missing input stays missing
+    three = growth_piecewise(now, past, 3).iloc[0]
+    assert three[1] == pytest.approx(1.5 ** (1 / 3) - 1)
+    assert three[7] == pytest.approx(-(1.5 ** (1 / 3) - 1))  # a deeper loss compounds on its size, negated
+
+
+def test_industries_follow_worldscope_groups_from_gics() -> None:
+    group = pd.Series(["Banks", "Insurance", "Financial Services", None, "Transportation", "Software", None])
+    sector = pd.Series(["Financials", "Financials", "Financials", "Real Estate", "Industrials", "IT", None])
+    assert bg.worldscope_industry(group, sector).tolist()[:6] == [
+        "BANK",
+        "INSURANCE",
+        "OTHER FINANCIAL",
+        "OTHER FINANCIAL",
+        "TRANSPORTATION",
+        "INDUSTRIAL",
+    ]
+    assert pd.isna(bg.worldscope_industry(group, sector).iloc[6])  # nothing known: no group, not "industrial"
+
+
+def test_regression_momentum_drops_missing_prices_and_counts_the_rest() -> None:
+    y = pd.DataFrame({1: [0.0, 0.1, np.nan, 0.35, 0.38, 0.52]})
+    t = bg._t_stats(y)[1]
+    x, v = np.arange(5.0), np.array([0.0, 0.1, 0.35, 0.38, 0.52])  # x counts the prices left, as production does
+    slope, intercept = np.polyfit(x, v, 1)
+    resid = v - (slope * x + intercept)
+    stderr = np.sqrt((resid**2).sum() / 3 / ((x - x.mean()) ** 2).sum())
+    assert t == pytest.approx(slope / stderr)
+
+
+def test_price_returns_need_a_recent_price() -> None:
+    days = pd.bdate_range("2014-05-01", "2015-06-30")
+    prices = pd.DataFrame({1: np.linspace(100.0, 150.0, len(days)), 2: 50.0}, index=days)
+    prices.loc[prices.index > "2015-05-20", 2] = np.nan  # stopped trading over a month before
+    out = bg.price_factors(prices, DATES)
+    then = prices.loc[:"2015-05-31", 1].iloc[-1]
+    assert out["1_mth_price_return_local"].loc[DAY, 1] == pytest.approx(150.0 / then - 1)
+    assert out["1_year_volatility"].to_numpy(dtype=float)[0, 0] > 0
+    assert out["12_mth_price_return_local"][2].isna().all() and out["price_return_stability"][2].isna().all()
+
+
+def _inputs(accounts: dict[str, list[float]], *, shares: list[float], value: float) -> bg.GemsInputs:
+    """One company on one date: ``accounts[item][k]`` known ``k`` years before (and its period end)."""
+    snaps = []
+    for k in range(bg.SNAPSHOTS):
+        names = bg.ITEMS_USED + bg.EXTRA_ITEMS
+        snap = {name: _frame([accounts.get(name, [np.nan] * bg.SNAPSHOTS)[k]]) for name in names}
+        end = (DAY - pd.DateOffset(years=k) - pd.Timestamp(0)).days - 90
+        snap |= {f"period_end:{name}": _frame([float(end)]) for name in names}
+        snaps.append(snap)
+    return bg.GemsInputs(
+        dates=DATES,
+        accounts=snaps,
+        shares=[_frame([s]) for s in shares],
+        value=[_frame([value])] * bg.SNAPSHOTS,
+        dividend_yield=[_frame([0.02])] * bg.SNAPSHOTS,
+        adjusted=pd.DataFrame({1: [10.0]}, index=DATES),
+        industry=pd.DataFrame({1: ["INDUSTRIAL"]}, index=DATES),
+    )
+
+
+def test_returns_use_average_balances_and_per_share_growth_the_dates_shares() -> None:
+    inputs = _inputs(
+        {
+            "net_income": [120.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            "equity": [1000.0, 800.0, 800.0, 800.0, 800.0, 800.0],
+            "total_assets": [2000.0] * 6,
+        },
+        shares=[100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+        value=2400.0,
+    )
+    f = bg.account_factors(inputs)
+    assert f["return_on_equity"].loc[DAY, 1] == pytest.approx(120.0 / 900.0)
+    assert f["eps_growth_1_year_hist"].loc[DAY, 1] == pytest.approx(0.2)
+    assert f["earnings_yield"].loc[DAY, 1] == pytest.approx(0.05)
+    # a 2-for-1 split since a year ago doubles the count then (in today's shares): not a halving of earnings
+    split = _inputs(
+        {"net_income": [120.0, 100.0, 100.0, 100.0, 100.0, 100.0]},
+        shares=[200.0, 200.0, 200.0, 200.0, 200.0, 200.0],
+        value=2400.0,
+    )
+    assert bg.account_factors(split)["eps_growth_1_year_hist"].loc[DAY, 1] == pytest.approx(0.2)
+
+
+def test_a_change_between_two_snapshots_of_the_same_period_is_missing() -> None:
+    profits = {"net_income": [120.0, 100.0, 90.0, 80.0, 70.0, 60.0], "total_assets": [1000.0] * 6}
+    fresh = bg.account_factors(_inputs(profits, shares=[1.0] * 6, value=1.0))
+    assert fresh["cash_flow_growth_1_year_change"].loc[DAY, 1] == pytest.approx(0.02)
+    assert fresh["cash_flow_growth_3_year_change"].loc[DAY, 1] == pytest.approx(0.04)
+    stale = _inputs(profits, shares=[1.0] * 6, value=1.0)
+    stale.accounts[0]["period_end:net_income"] = stale.accounts[1]["period_end:net_income"]  # nothing new in a year
+    f = bg.account_factors(stale)
+    assert np.isnan(f["cash_flow_growth_1_year_change"].to_numpy(dtype=float)[0, 0])
+    # two years still separate it from the third snapshot's period: at least the 700 days a 3-year change needs
+    assert f["cash_flow_growth_3_year_change"].loc[DAY, 1] == pytest.approx(0.04)
+
+
+def test_cleaning_sets_values_outside_limits_missing_and_leaves_out_financials() -> None:
+    table = pd.DataFrame(
+        {
+            "date": DAY,
+            "listing_id": [1, 2, 3, 4],
+            "industry": ["INDUSTRIAL", "INDUSTRIAL", "BANK", "OTHER FINANCIAL"],
+            "debt_to_assets": [0.5, 3.0, 0.4, 0.4],
+            "book_yield": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
+    rules = pd.DataFrame(
+        {
+            "barings_metric_name": ["debt_to_assets"],
+            "lower_limit": [0.0],
+            "upper_limit": [2.0],
+            "exclude_financials": [2],
+        }
+    )
+    out = bg.clean(table, rules)
+    # outside the limits: missing, not clipped; a bank left out; other financials kept by rule 2
+    assert out["debt_to_assets"].isna().tolist() == [False, True, True, False]
+    assert out["debt_to_assets"].iloc[0] == 0.5
+    assert out["book_yield"].tolist() == table["book_yield"].tolist()  # no rule: kept
+    assert bg.clean(table) is table
+
+
+def _table(n: int, **columns: list[float] | np.ndarray) -> pd.DataFrame:
+    return pd.DataFrame({"date": DAY, "listing_id": range(1, n + 1), "industry": "INDUSTRIAL", **columns})
+
+
+def test_growth_needs_three_of_its_four_scores_and_sustainable_growth_needs_estimates() -> None:
+    rng = np.random.default_rng(0)
+    from_accounts = [c for c in bg.GROWTH_INPUTS if c not in ESTIMATE_FACTORS]
+    accounts_only = {c: rng.normal(size=20) for c in from_accounts}
+    # as coded, the sustainable-growth score needs the NTM term; cash-flow, EPS and shareholder yield still make three
+    assert bg.growth_composite(_table(20, **accounts_only))["pct_rank_growth_composite"].notna().all()
+    two = {c: v for c, v in accounts_only.items() if not c.startswith("shareholder_yield")}
+    assert bg.growth_composite(_table(20, **two))["pct_rank_growth_composite"].isna().all()  # two of four: none
+
+
+def test_value_needs_four_yields_outside_financials_and_ranks_one_as_cheapest() -> None:
+    yields = np.linspace(0.01, 0.10, 10)
+    table = _table(10, earnings_yield=yields, book_yield=yields, cash_flow_yield=yields, sales_yield=yields)
+    value = bg.value_composite(table)["pct_rank_value_composite"]
+    assert value.iloc[-1] == 10 and value.iloc[0] == 100  # 1 = best (rank in percent: the cheapest of ten is 10)
+    three = bg.value_composite(table.drop(columns="sales_yield"))["pct_rank_value_composite"]
+    assert three.isna().all()  # three of six yields: production's minimum of four is not met
+
+
+def test_qgarp_counts_a_missing_rank_as_the_middle() -> None:
+    comp = pd.DataFrame(
+        {
+            "pct_rank_quality_alpha": [1.0, 50.0, 100.0, np.nan],
+            "pct_rank_quality_defensive": [1.0, 50.0, 100.0, np.nan],
+            "pct_rank_value_composite": [1.0, 50.0, 100.0, np.nan],
+        }
+    )
+    rank = bg.qgarp(comp, pd.Series(DAY, index=comp.index))
+    assert rank.tolist() == [25.0, 75.0, 100.0, 50.0]  # 1 = best; a name with no ranks sits in the middle
+    revisions = comp.assign(zscore_earnings_revisions_1_mth=[2.0, 0.0, -2.0, 0.0])
+    as_coded = bg.qgarp(revisions, pd.Series(DAY, index=comp.index))
+    fixed = bg.qgarp(revisions, pd.Series(DAY, index=comp.index), fix_revisions_direction=True)
+    assert as_coded.tolist() == fixed.tolist()  # the other inputs dominate here...
+    level = revisions.assign(
+        pct_rank_quality_alpha=50.0, pct_rank_quality_defensive=50.0, pct_rank_value_composite=50.0
+    )
+    gap = bg.qgarp(level, pd.Series(DAY, index=comp.index))
+    assert gap.iloc[2] < gap.iloc[0]  # ...but alone, as coded, the worst revisions (-2) rank best
+
+
+def test_qgarp_weights_are_configurable_and_spelled_one_way() -> None:
+    assert bg.qgarp_weights(dict(bg.QGARP_WEIGHTS)) == bg.QGARP_WEIGHTS  # production's, in production's order
+    momentum = {**dict(bg.QGARP_WEIGHTS), "zscore_momentum_composite": 0.2, "pct_rank_quality_defensive": 0.0}
+    spelled = bg.qgarp_weights(momentum)
+    assert spelled[-1] == ("zscore_momentum_composite", 0.2)  # added after production's inputs...
+    assert "pct_rank_quality_defensive" not in dict(spelled)  # ...and a zero weight is no input at all
+    assert bg.BaringsGarpConfig(qgarp_weights=momentum).qgarp_weights == spelled  # one config, one registry hash
+    assert bg.BaringsGarpConfig().qgarp_weights == bg.QGARP_WEIGHTS
+    for wrong in ({"momentum": 1.0}, {"pct_rank_value_composite": -0.1}, {"pct_rank_value_composite": 0.0}):
+        with pytest.raises(ValueError):
+            bg.qgarp_weights(wrong)
+
+
+def test_qgarp_ranks_a_z_score_input_higher_is_better() -> None:
+    comp = pd.DataFrame({"zscore_momentum_composite": [2.0, 0.0, -2.0], "pct_rank_value_composite": [50.0, 50.0, 50.0]})
+    days = pd.Series(DAY, index=comp.index)
+    rank = bg.qgarp(comp, days, weights={"zscore_momentum_composite": 1.0, "pct_rank_value_composite": 1.0})
+    assert rank.tolist() == sorted(rank.tolist())  # the strongest momentum (+2) ranks best, unlike revisions as coded
+    halved = bg.qgarp(comp, days, weights={"zscore_momentum_composite": 0.5, "pct_rank_value_composite": 0.5})
+    assert halved.tolist() == rank.tolist()  # only the weights' ratios matter
+
+
+def test_shareholder_yield_banks_and_unusual_items_follow_production() -> None:
+    flows = {
+        "net_income": [100.0] * 6,
+        "total_assets": [1000.0] * 6,
+        "operating_income": [200.0] * 6,
+        "dividends_paid": [30.0, 20.0, 20.0, 10.0, 10.0, 10.0],
+        "stock_repurchased": [20.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "lt_debt_issued": [50.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "unusual_expense": [-40.0] * 6,  # a net gain
+        "loans_net": [500.0] * 6,
+        "deposits": [800.0] * 6,
+    }
+    f = bg.account_factors(_inputs(flows, shares=[1.0] * 6, value=1000.0))
+    # (30 - (0 - 20) - 50) / 1000 now, (20 - 0 - 0) / 1000 a year before: borrowing to pay holders is not a return
+    assert f["shareholder_yield_growth_hist"].loc[DAY, 1] == pytest.approx(0.0 - 0.02)
+    assert f["extraordinary_credit_to_operating_income"].loc[DAY, 1] == pytest.approx(0.2)
+    assert f["extraordinary_charge_to_operating_income"].loc[DAY, 1] == 0.0
+    assert f["loans_to_deposits"].loc[DAY, 1] == pytest.approx(-0.625)  # as coded: negated
+    bank = _inputs(flows, shares=[1.0] * 6, value=1000.0)
+    bank = bg.GemsInputs(**{**bank.__dict__, "industry": pd.DataFrame({1: ["BANK"]}, index=DATES)})
+    assert bg.account_factors(bank)["shareholder_yield_growth_hist"].loc[DAY, 1] == pytest.approx(0.05 - 0.02)

@@ -1,0 +1,75 @@
+"""The engine waits for a paused serverless database instead of failing on its first slow login."""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+import pytest
+import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError
+
+from equity_research.db import engine as db_engine
+from equity_research.settings import DatabaseSettings
+
+AZURE = DatabaseSettings("example.database.windows.net", "equity_research", "user", "secret", "ODBC Driver 18")
+
+
+class _Conn:
+    def __enter__(self) -> _Conn:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def execute(self, statement: object) -> None:
+        return None
+
+
+class _Engine:
+    """Fails the first ``failures`` connections with ``message``, then connects."""
+
+    def __init__(self, failures: int, message: str) -> None:
+        self.failures = failures
+        self.message = message
+        self.attempts = 0
+
+    def connect(self) -> _Conn:
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise DBAPIError("SELECT 1", None, Exception(self.message))
+        return _Conn()
+
+
+def _patch(monkeypatch: pytest.MonkeyPatch, fake: _Engine) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+
+    def create_engine(url: sa.URL, **kwargs: Any) -> _Engine:
+        seen.update(kwargs, url=url)
+        return fake
+
+    monkeypatch.setattr(sa, "create_engine", create_engine)
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    return seen
+
+
+def test_login_timeout_is_given_to_the_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _patch(monkeypatch, _Engine(0, ""))
+    db_engine.make_engine(AZURE)
+    assert seen["connect_args"] == {"timeout": db_engine.LOGIN_TIMEOUT}
+    assert "LoginTimeout" not in seen["url"].query  # the ODBC driver rejects it as a connection-string attribute
+
+
+def test_a_login_timed_out_while_resuming_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _Engine(2, "[08001] TCP Provider: Timeout error [258].  (258) (SQLDriverConnect)")
+    _patch(monkeypatch, fake)
+    db_engine.make_engine(AZURE)
+    assert fake.attempts == 3
+
+
+def test_other_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _Engine(1, "[28000] Login failed for user (18456)")
+    _patch(monkeypatch, fake)
+    with pytest.raises(DBAPIError):
+        db_engine.make_engine(AZURE)
+    assert fake.attempts == 1
