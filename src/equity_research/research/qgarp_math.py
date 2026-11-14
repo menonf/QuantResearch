@@ -1,4 +1,4 @@
-"""Arithmetic shared by the Barings GEMS factors: Spark's division and production's growth sign rules."""
+"""Arithmetic shared by the Barings QGARP factors: division without infinities and the strategy's growth sign rules."""
 
 from __future__ import annotations
 
@@ -9,12 +9,12 @@ import pandas as pd
 
 
 def div(a: pd.DataFrame, b: pd.DataFrame) -> pd.DataFrame:
-    """``a / b``, missing where ``b`` is zero or missing (Spark's null, never an infinity)."""
+    """``a / b``, missing where ``b`` is zero or missing (never an infinity)."""
     return a / b.where(b != 0)
 
 
 def growth_piecewise(current: pd.DataFrame, past: pd.DataFrame, years: int | None = None) -> pd.DataFrame:
-    """Production's sign rules for growth from ``past`` to ``current``.
+    """The strategy's sign rules for growth from ``past`` to ``current``.
 
     ``years=None`` is the 1-year version ((c - p) / |p|); 3 or 5 the compound rate a year, with a deterioration
     between two losses compounded on its size and negated. From or to zero, or across a sign change, the growth is

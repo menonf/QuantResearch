@@ -18,7 +18,7 @@ import getpass
 import hashlib
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import pandas as pd
@@ -84,6 +84,44 @@ def record_run(
             .returning(schema.research_run.c.run_id)
         ).scalar_one()
     return int(run_id)
+
+
+#: What a registered configuration of a machine-learning study is (docs/ML4T_PLAN.md): a fit judged on validation
+#: folds, a strategy backtested before the hold-out, or the one run that opens the hold-out.
+STAGES = ("training", "backtest", "holdout")
+
+
+def record_search(
+    engine: Engine,
+    family: str,
+    points: Iterable[tuple[Mapping[str, Any], Mapping[str, Any]]],
+    *,
+    stage: str = "training",
+    search: str | None = None,
+    data_snapshot: pd.Timestamp | None = None,
+) -> list[int]:
+    """Register every point of a search as a trial of ``family``; returns the run ids in order.
+
+    ``points`` are ``(config, metrics)`` pairs - each hyperparameter setting tried and how it scored on its folds.
+    A search registered whole means :func:`trial_count`, and so every deflated Sharpe ratio of the family, counts all
+    it tried, not only the setting it kept. Each config records its ``stage`` (one of :data:`STAGES`) and the
+    ``search`` it belongs to; a point registered again (a search rerun) is not another trial. Only the ``holdout``
+    stage marks its runs as having opened the hold-out.
+    """
+    if stage not in STAGES:
+        raise ValueError(f"stage must be one of {STAGES}, not {stage!r}")
+    tagged = {"stage": stage} | ({"search": search} if search is not None else {})
+    return [
+        record_run(
+            engine,
+            tagged | dict(config),
+            metrics,
+            family=family,
+            data_snapshot=data_snapshot,
+            holdout_opened=stage == "holdout",
+        )
+        for config, metrics in points
+    ]
 
 
 def trial_count(engine: Engine, family: str) -> int:

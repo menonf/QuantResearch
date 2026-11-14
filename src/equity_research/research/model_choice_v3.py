@@ -37,7 +37,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from equity_research.research import ml
+from equity_research.research import labels, ml
 from equity_research.research import model_choice as mc
 from equity_research.research import model_choice_v2 as v2
 from equity_research.research.model_choice import Candidate
@@ -70,13 +70,9 @@ PROTOCOL: dict[str, Any] = {
 def trimmed_excess(returns: pd.DataFrame, members: pd.DataFrame, trim: float = TRIM) -> pd.DataFrame:
     """``date x listing_id``: each member's return clipped to the date's ``trim`` quantiles, less their mean.
 
-    Only members count, for the quantiles and for the mean; non-members are missing.
+    Only members count, for the quantiles and for the mean; non-members are missing (:func:`labels.trimmed_excess`).
     """
-    on = members.reindex(index=returns.index, columns=returns.columns, fill_value=False).astype(bool)
-    known = returns.where(on)
-    low, high = known.quantile(trim, axis=1), known.quantile(1 - trim, axis=1)
-    clipped = known.clip(lower=low, upper=high, axis=0)
-    return clipped.sub(clipped.mean(axis=1), axis=0)
+    return labels.trimmed_excess(returns, members, trim)
 
 
 def flat(predictions: pd.DataFrame, members: pd.DataFrame) -> pd.Series:

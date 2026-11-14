@@ -50,17 +50,26 @@ def make_engine(db: DatabaseSettings, *, wake_attempts: int = 6) -> Engine:
         pool_recycle=1800,
         use_insertmanyvalues=False,
     )
-    for attempt in range(1, wake_attempts + 1):
+    wake(engine, attempts=wake_attempts)
+    return engine
+
+
+def wake(engine: Engine, *, attempts: int = 6) -> None:
+    """Connect once, waiting for a paused serverless database to resume - before writing after a long pause.
+
+    An engine waits when it is made; a load that then does hours of work without the database (downloads, model
+    scoring) finds it paused again, and its next connection must wait the same way.
+    """
+    for attempt in range(1, attempts + 1):
         try:
             with engine.connect() as conn:
                 conn.execute(sa.text("SELECT 1"))
-            break
+            return
         except DBAPIError as exc:
-            if attempt == wake_attempts or not any(code in str(exc.orig) for code in RESUME_ERROR_CODES):
+            if attempt == attempts or not any(code in str(exc.orig) for code in RESUME_ERROR_CODES):
                 raise
-            log.info("database %s is resuming - retry %d/%d in 20s", db.name, attempt, wake_attempts)
+            log.info("database is resuming - retry %d/%d in 20s", attempt, attempts)
             time.sleep(20)
-    return engine
 
 
 def create_database(db: DatabaseSettings) -> bool:

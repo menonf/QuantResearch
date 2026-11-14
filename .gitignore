@@ -12,6 +12,9 @@ dist/
 # Data never goes in git: raw vendor files, local research caches, notebook outputs of data
 data/
 
+# Reference papers and books read beside the docs: large, and not ours to publish
+docs/*.pdf
+
 # Notebooks: keep sources, not checkpoints
 .ipynb_checkpoints/
 

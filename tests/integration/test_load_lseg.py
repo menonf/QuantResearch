@@ -127,10 +127,10 @@ class FakeLseg:
         if fields_ == f.DIVIDEND_FIELDS:
             dividends = pd.DataFrame(
                 {
-                    "Instrument": ["BBB.OQ"],
-                    "Dividend Ex Date": ["2024-02-09"],
-                    "Gross Dividend Amount": [0.5],
-                    "Dividend Type": ["Regular"],
+                    "Instrument": ["BBB.OQ", "BBB.OQ"],
+                    "Dividend Ex Date": ["2023-11-09", "2024-02-09"],  # the first in the prices' year before START
+                    "Gross Dividend Amount": [0.5, 0.5],
+                    "Dividend Type": ["Regular", "Regular"],
                 }
             )
             return _within(dividends, "Dividend Ex Date", params)
@@ -273,6 +273,8 @@ def test_a_throttled_load_resumes_and_a_repeat_does_nothing(scratch: Engine, tmp
             )
         ).one()
         assert (split[0], split[1]) == (2.0, "2024-02-01")
+        # actions are asked from the first price, not from START: momentum and returns there need them too
+        assert one("SELECT MIN(ex_date) FROM market.corporate_action").isoformat() == "2023-11-09"
         assert (
             one(f"SELECT COUNT(*) FROM market.price_bar p {of_retired} AND i.entity_id = p.listing_id") > 0
         )  # its history

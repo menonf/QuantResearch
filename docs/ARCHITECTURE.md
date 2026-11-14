@@ -39,7 +39,14 @@ The raw zone and the cache belong to one database (the folder is named after it)
 files. A database is built and verified locally (SQL Server Express), then copied to Azure table by table with
 every id unchanged (`eqr copy-database`, which checks rows and a checksum per table on both sides).
 
-Free-tier compute (100k vCore-seconds a month) is spent on loads and syncs, not on research reads.
+Free-tier compute (100k vCore-seconds a month) is spent on loads and syncs, not on research reads. A load that
+downloads for hours (the SEC's 10-Ks) stages its files and lands them in short write phases, each under the writer
+lock, so the serverless database can pause in between.
+
+Research results kept in the artifact store are keyed by the cache's **data version** - the latest `loaded_at` it has
+synced. Filing text (`fund.document`, `fund.text_measure`) has a version of its own (`store.SEPARATE_TABLES`):
+loading it does not make every price- and accounts-based result stale, and research that reads it keys its results
+by both versions.
 
 ## 3. Data model (Azure SQL)
 
@@ -48,7 +55,7 @@ Schemas separate concerns and permissions (a researcher role reads `ref`, `marke
 ### `ref` - who is who
 | Table | Key | Notes |
 |---|---|---|
-| `vendor` | `vendor_id` | the data sellers with fixed small ids (1 refinitiv / LSEG, 2 sec, 3 yahoo, 4 financedatabase, 5 norgate, 6 tiingo, 7 simfin), used by every other table and the same in every database |
+| `vendor` | `vendor_id` | the data sellers with fixed small ids (1 refinitiv / LSEG, 2 sec, 3 yahoo, 4 financedatabase, 5 norgate, 6 tiingo, 7 simfin, 8 sraf - Notre Dame's Loughran-McDonald dictionary, 9 repository - corrections this repository states itself), used by every other table and the same in every database |
 | `issuer` | `issuer_id` | a company: name, `domicile_country` (where it is run - not where its shares trade, which is the listing's exchange), `incorporation_country` (where it is registered: UK stamp duty follows it) |
 | `classification` | (`issuer_id`, `vendor_id`, `scheme`, `valid_from`) | a company's sector / industry group / industry / sub-industry per vendor and scheme (GICS), with the dates each held; a change closes the old row and opens a new one, so history builds from the day it was first recorded |
 | `listing` | `listing_id` | one share line - the same security whatever it was called (every RIC it had is an identifier: a ticker change does not split its history): `issuer_id`, share class, exchange (MIC), currency, `instrument_type` (equity / etf / index / fund - a closed-end fund, a UK investment trust: an index member, but research leaves it out / fx - one unit of its currency, priced in US dollars: an exchange rate), `listed_on`, `delisted_on` |
@@ -71,6 +78,8 @@ Schemas separate concerns and permissions (a researcher role reads `ref`, `marke
 | `financial_fact` | (`issuer_id`, `vendor_id`, `item`, `period_type`, `period_end`, `published_at`) | canonical accounting items: `period_type` Q (3-month flow), YTD, FY (fiscal-year flow), I (balance at an instant). SEC facts are as first reported, each restatement a new row with a later `published_at`; LSEG facts are its quarterly figures dated by their first announcement; SimFin facts are its latest figures, dated by their first publication where the SEC's first report has the same value, else by when SimFin last re-dated them (usually a year later). Every vendor goes through the same ratio code, which is how they are compared |
 | `estimate` | (`listing_id`, `vendor_id`, `measure`, `period`, `as_of_date`) | analysts' consensus (I/B/E/S, through LSEG) as it stood at each month end: mean, median, standard deviation, number of estimates and the fiscal year's end, for EPS, revenue, EBIT, dividends and cash flow per share and ROE, FY1-FY3. Per listing - a per-share forecast belongs to a share class; per-share figures in the shares of their own date (LSEG restates them for every later split; the loader undoes that with LSEG's splits), so a later split never rewrites them |
 | `estimate_revision` | (`listing_id`, `vendor_id`, `measure`, `period`, `as_of_date`) | how many analysts raised and lowered their EPS estimate (FY1, FY2), at each month end, for that day's index members |
+| `document` | (`issuer_id`, `vendor_id`, `filing_ref`) | every 10-K, 10-Q and 8-K (and amendment) a company filed since 2003, from its EDGAR index: form, filing date, the period or event date, `published_at` - the instant EDGAR accepted it, when it became public - and an 8-K's item codes (2.02 results, 5.02 an officer leaving, 4.02 a restatement...) |
+| `text_measure` | (`issuer_id`, `vendor_id`, `filing_ref`, `section`, `measure`) | what research reads of an annual report's text, which stays in the raw zone (gzip-compressed EDGAR HTML: forty thousand reports would fill the database): word counts by Loughran-McDonald category for the whole report, its MD&A and its risk factors; cosine and Jaccard similarity to the company's previous annual report; FinBERT's tone of sampled MD&A sentences. Each row names its `method` (dictionary edition, model), so a new one re-measures from the raw zone |
 | `estimate_actual` | (`listing_id`, `vendor_id`, `measure`, `period_end`) | each fiscal year's reported figure as the analysts' service counts it (comparable to the estimates) and when it was reported |
 
 ### `ingest`, `ops`, `research`
@@ -80,8 +89,17 @@ Schemas separate concerns and permissions (a researcher role reads `ref`, `marke
 | `ops.job_run` | one row per pipeline run / step with status, rows, detail; an application lock prevents overlapping writers |
 | `ops.check_result` | the outcome of every quality gate |
 | `research.run` | every backtest: config, config hash, code version, data snapshot (max `loaded_at`), metrics, whether it touched the hold-out |
+| `research.rule_set` | a named set of rules one strategy applies together (`gems-2026-11`: Barings' cleaning limits): its strategy, description, source and the checksum of its rules |
+| `research.strategy_rule` | one rule of a set: its subject (a factor, a composite, `*` for the strategy), its type (`lower_limit`, `upper_limit`, `exclude_financials`, `invert`, `weight`, `threshold`, `setting`) and its value |
 
 Every canonical row carries `batch_id` (provenance back to the raw file) and `loaded_at`.
+
+**Strategy rules** are shared through the database and owned by the repository. Each rule set is a file beside
+`research/rules.py`, versioned and tested with the code; `eqr load-rules` writes it to the two tables, and research
+reads it from there through the cache - so everyone, and any other tool, applies the same rules. A set is **never
+changed once loaded**: a run's registered settings name the set it used, and the loader refuses a file whose rules
+differ from the loaded set of the same code (by checksum). A changed rule is a new file under a new code. The tables
+are copied whole at each cache sync and do not move the data version.
 
 ### Choosing vendors, adding one
 
@@ -157,6 +175,23 @@ Every canonical row carries `batch_id` (provenance back to the raw file) and `lo
   5-for-1 of 2005. A crash that met an issue of shares matches the count too but no whole exchange (National City,
   2008), so it stays a crash. A build replays the actions after the share counts (no requests). Gate
   `unexplained_price_jumps` lists the moves no action explains.
+* **A spin-off is reinvested, not lost.** A capital change near 1 that lowers the price (a spin-off, a rights issue:
+  stored as `spinoff` with ratio > 1) adjusts prices and returns like a split - the spun-off value is treated as
+  reinvested in the parent - but never share counts. Like a split, it is what the price says: placed on the vendor's
+  date or one of the two trading days after, whichever the price drops on, and left out when no drop within half its
+  size confirms it (LSEG dates many US spin-offs a day early, some London ones days). Ratios below 1 (consolidations
+  that come with a special payout) are not applied: the price does not rise by them. The method has a version
+  (`panels.RETURNS_VERSION`) in every research artifact's key, so a change to it rebuilds cached results. Gate
+  `suspect_halvings` lists the halvings left: a new share class handed out or a missed split.
+* **What no vendor recorded, the repository states.** A corporate action every vendor lacks - a new share class
+  handed to holders (Alphabet's class C of 2014, Under Armour's of 2016), a split LSEG never had (C.H. Robinson's
+  2-for-1 of 2005) - is a row of `ingest/corrections/corporate_actions.csv`, named by RIC and saying what happened.
+  `eqr load-corrections` (source `repository`, last in a build or refresh) lands the file in the raw zone and writes it
+  to `corporate_action` under vendor 9 `repository`; a distribution's ratio is the holder's value on its ex-date over
+  the parent's price, from both lines' closes. Research takes a correction only where the prices' vendor has no split
+  or spin-off within 5 days of it, so a vendor that records the event later does not count it twice. A correction
+  comes from evidence (`suspect_halvings`, the share counts), never from a rule guessed from prices alone: a new share
+  line or a halving is also what a collapse with new shares looks like (Guaranty Financial, 2008).
 * **A figure is not known before its period ends** - for any vendor: an LSEG announcement dated before its quarter
   ended belongs to another quarter (LSEG lines announcement dates up by row), so the figure is dated conservatively.
 * **A leaver the vendor missed still leaves.** An open membership of a listing that stopped trading ends the day after
@@ -172,24 +207,29 @@ src/equity_research/
   db/                  engine, schema (SQLAlchemy Core), Alembic migrations, repositories
   raw/                 the raw zone: land a vendor response, register its batch, read it back
   ingest/
-    vendors/<vendor>/  fetch + normalise for one vendor: refinitiv (LSEG, live), norgate, sec, yahoo,
+    vendors/<vendor>/  fetch + normalise for one vendor: refinitiv (LSEG, live), norgate, sec (XBRL facts; filing
+                       indexes and the text of annual reports: documents.py, text.py), yahoo,
                        financedatabase (open source: codes, domicile, sector labels), tiingo (prices),
-                       simfin (statements)
+                       simfin (statements), sraf (the Loughran-McDonald dictionary)
     countries.py       country names as vendors write them -> ISO codes
     identity.py        vendor identifiers -> issuer / listing (matching rules, conflicts, merges)
     membership.py      membership spells made consistent: overlaps merged, none before the first trade
     reference.py       our indices and universes (codes, costs, benchmarks)
     classification.py  sector history: record what a vendor says today, close what changed
+    corrections/       corporate actions no vendor recorded (corporate_actions.csv), stated by the repository
   quality/             data-quality checks used as gates; the audit (architecture rules, fitness for research)
   pipelines/           sources (the list a build / refresh runs), load_lseg (+ probe), load_norgate (+ probe),
                        load_benchmarks, load_financedatabase, load_sec, load_tiingo (+ probe),
-                       load_simfin (+ probe), load_estimates (+ probe),
+                       load_simfin (+ probe), load_estimates (+ probe), load_sec_text (filing indexes, 10-K
+                       text measures, FinBERT tone: staged downloads, short write phases), load_rules (the
+                       repository's strategy rule sets into the shared tables, each loaded once),
+                       load_corrections (the repository's corporate-action corrections),
                        refresh (with the gates), copy_database; the CLI
   research/
     cache.py           sync canonical tables to the local Parquet / DuckDB cache
     reads.py           the cache reads research loaders share (companies, accounts, actions, share counts) and
                        the first preferred vendor's row - each written once, so a fix reaches every loader
-    panels.py          point-in-time panels: prices (raw, split-adjusted, total return), membership, accounts as of t
+    panels.py          point-in-time panels: prices (raw, adjusted for splits and spin-offs, total return), membership, accounts as of t
     accounting.py      TTM figures, earnings surprises and items as known on a date (vendor-neutral; implausible
                        counts dropped)
     ratios.py          ratios at decision dates; compare.py checks two vendors' ratios against each other
@@ -204,7 +244,7 @@ src/equity_research/
                        spread yardstick, a flat forecast scoring 0 and holding the largest companies
     garp.py            the S&P 500 GARP strategy rebuilt from its published rules (growth, then quality & value)
     barings_garp.py    Barings' GEMS factors and QGARP composite rebuilt from their production code, and a QGARP book
-    barings_estimates.py  its I/B/E/S factors (NTM / LTM, forward yields, expected growth, revisions); gems_math.py
+    barings_estimates.py  its I/B/E/S factors (NTM / LTM, forward yields, expected growth, revisions); qgarp_math.py
     arima_garch.py     a daily S&P 500 timing signal: ARIMA chosen by AIC, then GJR-GARCH on its residuals, refitted each
                        day (each day's fit stored under data/<db>/research/arima_garch/)
     dashboard.py       a factor dashboard's numbers: period returns, risk, overlap, active share, exposures
@@ -213,9 +253,41 @@ src/equity_research/
     indices.py         rebuild an index (by market value or equally) and compare it with the real one
     screen.py          today's ranking of a factor mix or any registered strategy, with the numbers behind it
     classification.py  the sector a company had on a day
-    registry.py        research-run registry, deflated Sharpe and the hold-out fence
+    registry.py        research-run registry, deflated Sharpe and the hold-out fence; record_search registers every
+                       point of a search as a trial (stage: training / backtest / holdout)
+    rules.py           strategies' rule sets: the files they come from, their checks and checksum, and reading
+                       them from the shared tables through the cache
     runs.py            a registered run rebuilt from its config: its scores and book on a day (no backtest, no
-                       trial), or its backtest again without registering it
+                       trial), or its backtest again without registering it; each score's newest run in a family
+    store.py           the artifact store: Parquet under data/<db>/research/<kind>/<name>-<hash>.parquet, keyed by
+                       config and data snapshot, with a sidecar of config, snapshot and code version
+    labels.py          forward returns (1, 5, 21 days; to the next decision date), triple barrier, trend scanning
+    validation.py      walk-forward folds purged of overlapping labels; purged, embargoed k-fold for tuning
+    evaluation.py      IC (rank, Pearson) and Newey-West t, IC decay, quantile returns, turnover, rank
+                       autocorrelation, Benjamini-Hochberg, the triage ledger, moves against costs
+    regression.py      the regression check: existing strategies rerun and the risk model rebuilt, against a baseline
+    features.py        company features on decision dates: momentum and reversal, risk, liquidity (Amihud, Roll
+                       spread, zero days), the book's ratios and account extras, calendar; daily traded value
+    model_features.py  features from fitted models, walk-forward: GARCH(1,1), HAR, fractional differencing, Kalman
+                       trend, a break statistic, a two-state market regime
+    linear.py          the linear baseline: ridge, lasso, elastic net, logistic, tuned by purged k-fold inside each
+                       walk-forward fold; coefficient stability, split-conformal intervals, the composite yardstick
+    boosting.py        LightGBM (optional group `ml`): a loss x leaf-profile grid tuned in each fold, an Optuna
+                       search on the years before the first test, TreeSHAP importance, conformal intervals
+    allocation.py      predictions to books: decile and top-K entry; equal, inverse-volatility, HRP and mean-variance
+                       (risk model) weights; volatility-target, drawdown and Kelly overlays
+    ml_strategy.py     a P4 strategy backtested and measured (long-only against the index, long-short against cash)
+    assessment.py      cost grids and break-even, historical VaR / CVaR, IC drift, transfer coefficient and the
+                       Fundamental Law, White's Reality Check, Rademacher bounds
+    latent.py          latent factors on characteristic-managed portfolios: PCA, RP-PCA, IPCA, observed (BFRE)
+                       factors; out-of-sample total R2, pricing errors, SDF Sharpe
+    autoencoder.py     a conditional autoencoder (Gu, Kelly and Xiu) on torch (optional group `deep`)
+    deep.py            weekly sequence models (NLinear, LSTM, TSMixer) and an MLP ensemble, seeded and deterministic
+    causal.py          double machine learning with cross-fitting: a characteristic's effect, the factor-zoo check
+    text_features.py   features from filing text on decision dates: dictionary tone, change since last year's 10-K
+                       ("Lazy Prices"), FinBERT tone, 8-K events in the last quarter
+    synthetic.py       synthetic markets (block bootstrap, factor GARCH-t, regime-switching factors), their
+                       stylized facts and a discriminator score; real books run on synthetic paths
     risk_styles.py     a factor risk model's substyles (BlackRock's BFRE): size, volatility, momentum, liquidity,
                        value, yields, profitability, growth, leverage, mid-cap; risk_data.py reads its inputs
     risk_model.py      exposures, daily factor-return regressions, factor covariance and specific risk (BFRE 1.0
@@ -224,14 +296,16 @@ src/equity_research/
   charts.py            the notebooks' charts, one consistent style
 tests/                 unit tests (pure, no I/O) and integration tests (database, marked)
 notebooks/             parameters, explanations and displays - no logic; numbered folder.position
-  1_data_load/         1.1 initial load, 1.2 refresh
+  1_data_load/         1.1 initial load, 1.2 refresh, 1.3 filing text
   2_index_replication/ 2.1 S&P 500, 2.2 FTSE All-Share
   3_investment_strategies/  3.1 long-short, 3.2 long-only, 3.3 long-only extra signals, 3.4 long-only ML value,
                        3.5 S&P 500 GARP, 3.6 Barings GARP, 3.7 ARIMA-GARCH timing
   4_portfolio_analytics/  4.1 screen, 4.2 factor dashboard, 4.3 risk model
   5_analysis/          5.1 choosing a learning algorithm without hindsight, 5.2 the same with the learning task
                        repaired, 5.3 learning and judging what a portfolio earns
-  5_machine_learning/  (planned: docs/ML4T_PLAN.md)
+  6_machine_learning/  docs/ML4T_PLAN.md: 6.1 research protocol, 6.2 features, 6.3 linear models, 6.4 gradient
+                       boosting, 6.5 ML strategies, 6.6 strategy assessment, 6.7 latent factors, 6.8 deep learning,
+                       6.9 causal ML, 6.10 text features, 6.11 synthetic markets
 ```
 
 ## 5. Building a database
@@ -311,3 +385,65 @@ Afterwards `eqr refresh` keeps everything current (the daily job) and ends with 
 One database; separation by **role**, not by copies: `loader` writes `ref` / `market` / `fund` / `ingest` / `ops`,
 `researcher` reads them and writes `research`. Each person has their own login and their own local cache.
 Schema changes go through Alembic migrations only.
+
+## 7. Running a strategy month by month (design - not built yet)
+
+*Proposed 2026-11-08 for review; nothing below exists in code yet.* A tested strategy can be run as a **book**: each
+month the system builds the portfolio the strategy would hold, a person reviews it and may only remove names, and
+both books - the systematic one and the one actually held - are tracked from then on. The person's judgement is
+then measured, not assumed: after a year the gap between the two books says whether the vetoes earned or cost money.
+
+### Why this shape
+
+* **The strategy picks; the person checks.** The edge measured in research belongs to the whole book - every name at
+  its weight. A person who chose favourites from a screen would run a different, untested strategy; a person who
+  removes a name for a stated reason (a pending deal, a restatement, bad data) applies information the model cannot
+  see - 6.10 found that 8-K events carry news prices and accounts do not.
+* **Every decision is recorded.** An unrecorded override is an untested trial (principle 8); a veto names its reason
+  from a fixed list, and the book without vetoes - the **shadow book** - is always computable.
+* **Decisions are facts.** What was targeted, removed and held on a date happened; it is stored once and never
+  recomputed (principle 3: store facts, derive the rest - returns and the shadow comparison are derived).
+* **Paper first.** A book can run in `paper` mode (no money) from any registered run: from its start it trades on
+  data nobody has seen, the cleanest forward test there is. `live` mode needs the strategy's hold-out look recorded
+  (a run with `holdout_opened`), so money follows evidence.
+
+### Tables (schema `book`, one migration)
+
+| Table | One row per | Holds |
+|---|---|---|
+| `book.strategy` | book | name, the registered `run_id` it runs, mode (`paper` / `live`), start date, status, the veto rules' version |
+| `book.target` | book x rebalance date x listing | the systematic weight, score and rank; the code version and data snapshot that built it. Rebuilt freely until approved, then frozen |
+| `book.veto` | removal | book, date, listing, reason (`pending_deal`, `restatement`, `data_error`, `news_event`, `cannot_trade`), a note, who, when. A veto lasts one rebalance: next month the name is reviewed afresh |
+| `book.holding` | book x date x listing | the weights held after the vetoes, as approved; later the shares and fills a broker reports |
+
+A `manager` role writes `book`; `researcher` reads it.
+
+### The monthly cycle
+
+1. **Refresh** (`eqr refresh`) early in the month, while the free compute allowance has room; the gates must pass.
+2. **`eqr rebalance --book <name>`** - refuses if the last refresh failed a gate or the data is stale; refits the
+   strategy by its registered rule (the yearly refit of the walk-forward), builds today's book through the same code
+   as the backtest (`runs.snapshot`) and writes `book.target`; writes a **review sheet**: names entering and leaving,
+   weights, each name's scores and ratios (`screen`), and its 8-Ks of the last quarter (`fund.document`).
+3. **Review** - `eqr veto --book <name> <ticker> --reason <code> --note "..."`; nothing can be added or reweighted.
+4. **`eqr approve --book <name>`** - the strategy's own allocator runs again without the vetoed names (so the
+   constraints - net, gross, risk - still hold), the result is written to `book.holding`, and a trade list (CSV, from
+   the previous holding) is written for the broker. Orders are placed by hand until a broker is connected.
+5. **Report** - a notebook: the held book against the shadow book, both valued from prices and charged the same cost
+   model; each veto's outcome (the removed name against its replacement over the month); exposures (`dashboard`).
+
+### Code (when built)
+
+* `research/book.py` - pure functions: today's target from a snapshot, applying vetoes, the trade list, the two
+  books' returns, each veto's outcome. Unit-tested without a database.
+* `research/runs.py` - a snapshot for the ML4T strategies (notebook 6.5's books: the composite or a model's scores,
+  the allocators of `allocation.py`), beside the factor, GARP and QGARP snapshots it has.
+* `pipelines/rebalance.py` - I/O: the gate check, writing targets and holdings under the writer lock.
+* CLI `rebalance`, `veto`, `approve`, `books`; migration `0009_book`; notebook *book review*; integration tests on a
+  scratch database, as every pipeline has.
+
+### Order of work
+
+B0 the ML4T snapshot -> B1 the `book` tables -> B2 rebalance, veto, approve -> B3 the report -> **paper** from the
+first rebalance after the 2025 hold-out is opened -> a year of paper results -> `live`, if the evidence holds. A
+broker connection, and whether to run long-short (borrowing) or long-only, are decided then, on that evidence.

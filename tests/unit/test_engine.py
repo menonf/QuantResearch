@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
-from typing import Any
+from typing import Any, cast
+from unittest import mock
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 
 from equity_research.db import engine as db_engine
@@ -73,3 +76,28 @@ def test_other_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(DBAPIError):
         db_engine.make_engine(AZURE)
     assert fake.attempts == 1
+
+
+class _Waking:
+    """An engine whose database answers 'not currently available' a few times, as a resuming one does."""
+
+    def __init__(self, failures: int, code: str = "40613") -> None:
+        self.failures, self.code, self.calls = failures, code, 0
+        self.url = sa.make_url("mssql+pyodbc://server/equity_research")
+
+    def connect(self) -> Any:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise DBAPIError("SELECT 1", None, Exception(f"not currently available ({self.code})"))
+        return contextlib.nullcontext(mock.Mock())
+
+
+def test_wake_waits_for_a_resuming_database_and_raises_anything_else(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    resuming = _Waking(2)
+    db_engine.wake(cast(Engine, resuming))
+    assert resuming.calls == 3
+    with pytest.raises(DBAPIError):
+        db_engine.wake(cast(Engine, _Waking(1, code="18456")))  # a failed login is not a pause
+    with pytest.raises(DBAPIError):
+        db_engine.wake(cast(Engine, _Waking(9)), attempts=3)

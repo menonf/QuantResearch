@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from equity_research.research import indices as ix
 from equity_research.research.indices import cap_weighted, equal_weighted, segments, tracking
 from equity_research.research.panels import splits_between
 
@@ -84,3 +85,25 @@ def test_a_listing_in_two_indices_belongs_to_the_first_by_priority() -> None:
     out = segments(spells, pd.DataFrame({"index_id": [4, 6], "code": ["FTSE100", "FTSESC"]}), days, pd.Index([1, 2, 3]))
     assert out[1].tolist() == ["FTSE100", "FTSESC", "FTSESC"]
     assert out[2].isna().tolist() == [True, False, False] and out[3].isna().all()
+
+
+def test_the_tracking_summary_has_a_row_per_comparison_and_whole_days() -> None:
+    days = pd.bdate_range("2020-01-01", periods=300)
+    rng = np.random.default_rng(0)
+    theirs = pd.Series(rng.normal(0.0004, 0.01, len(days)), index=days)
+    pairs = {"same": (theirs, theirs), "noisy": (theirs + rng.normal(0, 0.001, len(days)), theirs)}
+    summary = ix.tracking_summary(pairs)
+    assert list(summary.index) == ["same", "noisy"] and summary["days"].dtype.kind == "i"
+    assert summary.loc["same", "tracking_error"] == 0.0
+    assert set(ix.TRACKING_FORMAT) == set(summary.columns)
+
+
+def test_yearly_tracking_error_finds_the_year_a_copy_drifted() -> None:
+    days = pd.bdate_range("2020-01-01", "2022-12-31")
+    rng = np.random.default_rng(1)
+    theirs = pd.Series(rng.normal(0.0004, 0.01, len(days)), index=days)
+    drift = np.where(days.year == 2021, rng.normal(0, 0.003, len(days)), 0.0)  # only 2021 goes wrong
+    by_year = ix.yearly_tracking_errors({"copy": (theirs + drift, theirs)})["copy"]
+    assert list(by_year.index) == [2020, 2021, 2022]
+    assert by_year.loc[2020] == 0.0 and by_year.loc[2022] == 0.0
+    assert by_year.loc[2021] == pytest.approx(0.003 * np.sqrt(252), rel=0.15)

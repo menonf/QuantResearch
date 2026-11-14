@@ -145,6 +145,7 @@ class VendorPreferences:
         "yahoo",
         "financedatabase",
         "sec",
+        "repository",  # last: its corrections read the prices the others loaded
     )
 
 

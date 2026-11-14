@@ -1,27 +1,27 @@
-"""Barings' GEMS QGARP score, rebuilt from its production code on our point-in-time data.
+"""Barings' QGARP strategy, reconstructed from its rules on our point-in-time data.
 
     result = run_barings_garp(cache, BaringsGarpConfig(start="2010-01-01", end="2024-12-31"), engine=engine)
 
-After Barings' ``PSA_Crisp_Metrics`` (the GEMS Factor Construction Library), as reconstructed from Quantlake in
-``GEMS_Factor_Reconstruction.py``: each factor and composite keeps its production formula, quirks included. On each
-month end, among the universe's members of the day:
+Each factor and composite keeps the strategy's own formula, quirks included. On each month end, among the universe's
+members of the day:
 
 1. **Raw factors** - the Worldscope-based ones from our accounts (:func:`account_factors`), the price-based ones
    from daily prices (:func:`price_factors`), the I/B/E/S ones from analysts' consensus history
    (:mod:`~equity_research.research.barings_estimates`). A factor whose inputs we do not hold yet
    (:data:`NOT_YET_BUILT`) is missing, never guessed.
-2. **Cleaning** (:func:`clean`) - a value outside its factor's limits is set missing, not clipped (Barings'
-   ``settings.metric_rules``, passed as ``rules``; without them nothing is removed) and financials are left out of
-   factors flagged so.
+2. **Cleaning** (:func:`clean`) - a value outside its factor's limits is set missing, not clipped, and financials
+   are left out of factors flagged so. The limits are Barings', a rule set of :mod:`~equity_research.research.rules`
+   (:data:`RULE_SETS`) read from the shared ``research.strategy_rule`` table and chosen by a run's ``rules`` setting;
+   without it nothing is removed.
 3. **Composites** as coded (:func:`composites`): value, growth and quality (with its alpha and defensive halves) as
    percentile ranks of averaged ranks, by industry group; momentum as clipped z-scores of 1-12 month returns; then
    ``qgarp = -(0.2 alpha + 0.1 defensive + 0.3 growth + 0.3 value + 0.1 revisions)`` of each input's rank, a missing
    rank counting as 50.5 (the middle), and ``pct_rank_qgarp`` its percentile rank (1 = best). The weights are
-   production's unless a run sets ``qgarp_weights`` - a variant, which may weigh any composite (momentum included).
+   Barings' unless a run sets ``qgarp_weights`` - a variant, which may weigh any composite (momentum included).
 4. **Book** - long the best ``enter`` fraction by QGARP, held while inside the best ``exit_`` (a buffer), rebalanced
    monthly, equally weighted or by market value.
 
-What differs from production, by data rather than choice:
+What differs from the original, by data rather than choice:
 
 * **Our items for Worldscope's lines** (``accounting.py``): EBITDA is EBIT + depreciation; unusual items are one net
   figure (LSEG's, or the SEC's restructuring and impairment charges less gains on disposals) split into a charge and
@@ -31,7 +31,7 @@ What differs from production, by data rather than choice:
   the SEC's XBRL accounts), shareholder yield is zero as coded (every flow missing counts as zero).
 * ``estimates=False`` runs the first version, before the I/B/E/S estimates were loaded (QGARP then had no growth and
   no revisions: quality and value only).
-* **Accounts as known on the date** (dated by publication) - production reads a period as soon as it has ended.
+* **Accounts as known on the date** (dated by publication) - the original reads a period as soon as it has ended.
   Trailing twelve months stand in for Worldscope's annual figures in the "annuals" factors, and its 1- and 3-year
   staleness guards compare our periods' ends.
 * **Our items for Worldscope's**: market value from each share line's own count; long-term debt is total debt less
@@ -39,8 +39,8 @@ What differs from production, by data rather than choice:
   dividends per share come from the dividend record, and a payout from dividends over net income.
 * **Industry**: Worldscope's general industry classification from GICS (:func:`worldscope_industry`) - banks,
   insurers, other financials (real estate included), utilities, transport, industrial for the rest.
-* **Universe**: an S&P index's members, in US dollars (local and USD returns are the same); production ranks across
-  its global ``qwd_global`` universe.
+* **Universe**: an S&P index's members, in US dollars (local and USD returns are the same); the original ranks
+  across a global universe.
 """
 
 from __future__ import annotations
@@ -58,6 +58,7 @@ from equity_research.research.barings_estimates import (
     ESTIMATE_FACTORS,
     REVISIONS_COMPOSITE,
     EstimateInputs,
+    consensus_revision_factors,
     estimate_factors,
     load_estimate_inputs,
     revisions_composite,
@@ -72,13 +73,15 @@ from equity_research.research.data import (
     load_universe_data,
     own_counts,
     vendor_items,
+    with_corrections,
 )
 from equity_research.research.factors import dividend_yield
-from equity_research.research.gems_math import div as _div
-from equity_research.research.gems_math import growth_piecewise
-from equity_research.research.gems_math import rows_on as _on
+from equity_research.research.indices import vendor_returns
 from equity_research.research.panels import by_listing, latest_counts
 from equity_research.research.portfolio import quantile_book, weighted_by
+from equity_research.research.qgarp_math import div as _div
+from equity_research.research.qgarp_math import growth_piecewise
+from equity_research.research.qgarp_math import rows_on as _on
 from equity_research.research.reads import (
     as_vendors,
     corporate_actions,
@@ -87,6 +90,7 @@ from equity_research.research.reads import (
     outstanding_counts,
 )
 from equity_research.research.registry import fence
+from equity_research.research.rules import RULE_FILES, cached_rules, limits_of, read_rules
 from equity_research.research.strategy import WEIGHTINGS, finish_run
 from equity_research.settings import vendor_preferences
 
@@ -247,7 +251,7 @@ HISTORY_DAYS = 3 * 366 + 60
 
 
 @dataclass(frozen=True)
-class GemsInputs:
+class QgarpInputs:
     """What the factors read, on the decision dates (``date x listing_id`` panels).
 
     ``accounts[k]`` holds the :data:`ITEMS_USED` known ``k`` years before each date (and ``period_end:<item>``,
@@ -285,7 +289,7 @@ def accounts_years_before(
 
     Like :func:`~equity_research.research.data.items_years_before`, plus ``period_end:<item>`` panels (in days since
     1970, so they compare and subtract as numbers): the "annual" factors are missing where two snapshots read the
-    same period (production's staleness guards).
+    same period (the strategy's staleness guards).
     """
     earlier = pd.Series(_years_before(dates, years), index=dates)
     known = by_listing(
@@ -336,14 +340,14 @@ def industry_panel(cache: ResearchCache, dates: pd.DatetimeIndex, listing_issuer
     return pd.DataFrame(rows).T.reindex(index=dates)
 
 
-def load_gems_inputs(
+def load_qgarp_inputs(
     cache: ResearchCache,
     data: UniverseData,
     *,
     price_vendors: tuple[str, ...] | None = None,
     fundamentals_vendor: str | tuple[str, ...] | None = None,
     with_estimates: bool = True,
-) -> GemsInputs:
+) -> QgarpInputs:
     """The factors' inputs for ``data``'s listings on its rebalance dates (``data`` loaded with :data:`HISTORY_DAYS`).
 
     Vendors as everywhere in research: accounts from the first preferred vendor that answers for the company on each
@@ -357,7 +361,7 @@ def load_gems_inputs(
     listing_issuer = listing_issuers(cache, listings)
     items = vendor_items(financial_facts(cache, listing_issuer, vendors), vendors, data.currency)
     actions = corporate_actions(cache, listings)
-    actions = actions[actions["vendor"].isin(price_vendors)].drop(columns="vendor").reset_index(drop=True)
+    actions = with_corrections(actions, price_vendors).drop(columns="vendor").reset_index(drop=True)
     counts = own_counts(outstanding_counts(cache, listings), price_vendors)
     yields = dividend_yield(data.returns, data.adjusted)
     accounts, shares, value, div = [], [], [], []
@@ -383,7 +387,7 @@ def load_gems_inputs(
         if with_estimates
         else None
     )
-    return GemsInputs(
+    return QgarpInputs(
         dates=dates,
         accounts=accounts,
         shares=shares,
@@ -399,7 +403,7 @@ def load_gems_inputs(
 
 
 def _neg_pop_std(parts: Sequence[pd.DataFrame]) -> pd.DataFrame:
-    """Minus the population standard deviation of ``parts``, missing if any part is (Spark column arithmetic)."""
+    """Minus the population standard deviation of ``parts``, missing if any part is."""
     mean = sum(parts, start=parts[0] * 0) / len(parts)
     var = sum(((x - mean) ** 2 for x in parts), start=parts[0] * 0) / len(parts)
     return pd.DataFrame(-np.sqrt(var.to_numpy(dtype=float)), index=mean.index, columns=mean.columns)
@@ -407,9 +411,9 @@ def _neg_pop_std(parts: Sequence[pd.DataFrame]) -> pd.DataFrame:
 
 @dataclass(frozen=True)
 class _Snapshots:
-    """The accounts, counts and values of :class:`GemsInputs` with the lookups every factor group uses."""
+    """The accounts, counts and values of :class:`QgarpInputs` with the lookups every factor group uses."""
 
-    inputs: GemsInputs
+    inputs: QgarpInputs
 
     def a(self, item: str, k: int = 0) -> pd.DataFrame:
         """``item`` as known ``k`` years before each date."""
@@ -438,7 +442,7 @@ class _Snapshots:
 
 
 def current_factors(s: _Snapshots) -> dict[str, pd.DataFrame]:
-    """``worldscope_raw_current_metrics`` (538-886): yields, margins, leverage and one-year growth on the date."""
+    """The "current" factors: yields, margins, leverage and one-year growth on the date."""
     a, mcap = s.a, s.inputs.value[0]
     revenue, ni, ebit, cfo = a("revenue"), a("net_income"), a("ebit"), a("operating_cash_flow")
     ev = mcap + a("total_debt").fillna(0.0) - a("cash").fillna(0.0)
@@ -450,7 +454,7 @@ def current_factors(s: _Snapshots) -> dict[str, pd.DataFrame]:
         "ebitda_to_price": _div(ebitda, mcap),
         "capex_to_depreciation": _div(a("capex"), a("depreciation")),
         "quick_ratio": _div(a("current_assets") - inventory, a("current_liabilities")),
-        # pure numbers already (production divides Worldscope's percentages by 100)
+        # pure numbers already (the original divides Worldscope's percentages by 100)
         "capital_adequacy_ratio_tier_1_capital": a("tier1_ratio"),
         "capital_adequacy_ratio_total_capital": a("total_capital_ratio"),
         "loans_to_deposits": _div(-a("loans_net"), a("deposits")),
@@ -480,11 +484,11 @@ def current_factors(s: _Snapshots) -> dict[str, pd.DataFrame]:
 
 
 def annual_factors(s: _Snapshots) -> dict[str, pd.DataFrame]:
-    """``worldscope_raw_annuals_metrics`` (888-1470): profit and cash-flow changes, unusual items, the bank ratios.
+    """The "annual" factors: profit and cash-flow changes, unusual items, the bank ratios.
 
     Also cash-flow quality and shareholder yield.
     A 1-year change is missing where both snapshots read the same period, a 3-year one where the periods end under
-    700 days apart (production's staleness guards). Trailing twelve months stand in for Worldscope's fiscal years.
+    700 days apart (the strategy's staleness guards). Trailing twelve months stand in for Worldscope's fiscal years.
     """
     ta = [s.a("total_assets", k).where(s.a("total_assets", k) != 0) for k in range(4)]
     end = [s.a("period_end:net_income", k) for k in range(4)]
@@ -531,10 +535,10 @@ def annual_factors(s: _Snapshots) -> dict[str, pd.DataFrame]:
 
 
 def _shareholder_yield(s: _Snapshots, k: int, total_assets: pd.DataFrame, is_bank: pd.DataFrame) -> pd.DataFrame:
-    """Cash returned to holders ``k`` years before, over total assets (``metrics.py`` 1286-1418, as coded).
+    """Cash returned to holders ``k`` years before, over total assets, as coded.
 
     ``(dividends - (shares issued - repurchased) - [not banks: short-term borrowing + long-term borrowing - repaid])
-    / |total assets|``, every flow counted as zero where it is not reported (production's ``fillna(0)``).
+    / |total assets|``, every flow counted as zero where it is not reported (as coded).
     """
 
     def z(item: str) -> pd.DataFrame:
@@ -546,10 +550,11 @@ def _shareholder_yield(s: _Snapshots, k: int, total_assets: pd.DataFrame, is_ban
 
 
 def over_time_factors(s: _Snapshots) -> dict[str, pd.DataFrame]:
-    """``worldscope_raw_over_time_metrics`` (2708-4221) with ``_over_time_ebit`` and ``_operating_leverage``.
+    """The "over time" factors, with EBIT growth and operating leverage.
 
     Yearly returns on the average of a balance and the one a year before; their volatility over five years (minus
-    the population standard deviation); accruals; sustainable growth; EPS and EBIT growth with production's sign rules.
+    the population standard deviation); accruals; sustainable growth; EPS and EBIT growth with the strategy's sign
+    rules.
     """
     a, mcap = s.a, s.inputs.value[0]
     roe = [s.roe(k) for k in range(5)]
@@ -607,8 +612,8 @@ def over_time_factors(s: _Snapshots) -> dict[str, pd.DataFrame]:
     }
 
 
-def account_factors(inputs: GemsInputs) -> dict[str, pd.DataFrame]:
-    """The Worldscope-based factors our accounts can build (:data:`ACCOUNT_FACTORS`), formulas as production codes.
+def account_factors(inputs: QgarpInputs) -> dict[str, pd.DataFrame]:
+    """The Worldscope-based factors our accounts can build (:data:`ACCOUNT_FACTORS`), formulas as coded.
 
     A yield divides by the company's market value on the date; per-share amounts are in the shares of the date.
     """
@@ -632,7 +637,7 @@ def _day_number(day: pd.Timestamp) -> float:
 def _t_stats(log_prices: pd.DataFrame) -> pd.Series:
     """Per column: the t-statistic of the slope of the valid values on 0..n-1 (scipy's ``linregress``).
 
-    As coded in production, the missing prices are dropped and x counts the ones left (x is not the week's position).
+    As coded, the missing prices are dropped and x counts the ones left (x is not the week's position).
     """
     y = log_prices.to_numpy(dtype=float)
     valid = ~np.isnan(y)
@@ -651,13 +656,13 @@ def _t_stats(log_prices: pd.DataFrame) -> pd.Series:
 
 
 def _returns_between_valid(prices: pd.DataFrame) -> pd.DataFrame:
-    """Each valid price over the previous valid one, less 1 (production's rows exist only where a price does)."""
+    """Each valid price over the previous valid one, less 1 (the original's rows exist only where a price does)."""
     previous = prices.ffill().shift(1)
     return (prices / previous - 1).where(prices.notna())
 
 
 def price_factors(adjusted: pd.DataFrame, dates: pd.DatetimeIndex) -> dict[str, pd.DataFrame]:
-    """Price momentum and risk on each date (``worldscope_raw_price_metrics``, ``metrics.py`` 1472-1918).
+    """Price momentum and risk on each date (the price factors).
 
     * returns over 1-12 months: the month's last price over the last price of the month ``m`` months before (each at
       most 30 days older than its month end), split-adjusted, without dividends;
@@ -665,7 +670,7 @@ def price_factors(adjusted: pd.DataFrame, dates: pd.DatetimeIndex) -> dict[str, 
     * ``1_year_volatility``: the standard deviation of weekly returns times the root of the number of weeks;
     * ``price_return_stability``: minus the standard deviation of monthly returns in percent over three years.
 
-    A listing without a price in the 30 days before the date has none of them (production's entity filter).
+    A listing without a price in the 30 days before the date has none of them (the strategy's filter).
     """
     days = pd.DatetimeIndex(adjusted.index)
     months = days.to_period("M")
@@ -719,7 +724,7 @@ def price_factors(adjusted: pd.DataFrame, dates: pd.DatetimeIndex) -> dict[str, 
 def factor_table(panels: Mapping[str, pd.DataFrame], members: pd.DataFrame, industry: pd.DataFrame) -> pd.DataFrame:
     """``[date, listing_id, industry, <factor>...]``: one row per member on each date (the composites' population).
 
-    Infinities become missing, as Spark's division by zero would have left them.
+    Infinities become missing: a division by zero gives no value, as in the original.
     """
     mask = members.to_numpy(dtype=bool)
     r, c = np.nonzero(mask)
@@ -735,12 +740,78 @@ def factor_table(panels: Mapping[str, pd.DataFrame], members: pd.DataFrame, indu
 
 
 FINANCIALS = ("BANK", "INSURANCE", "OTHER FINANCIAL")
+#: Barings' cleaning limits by the name a run asks for them: the rule sets of this strategy in
+#: :mod:`~equity_research.research.rules` (files in the repository, shared through the table
+#: ``research.strategy_rule``). The rule set ``gems-2026-11`` holds the limits of November 2026: a lower and an upper
+#: limit for 117 scores, no exclusion of financials. Changed limits are a new name, never a changed set - a registered
+#: run names the limits it used.
+RULE_SETS = {code: spec.file for code, spec in RULE_FILES.items() if spec.strategy == "barings_qgarp"}
+RULE_COLUMNS = ["barings_metric_name", "lower_limit", "upper_limit", "exclude_financials"]
+
+
+def _as_limits(rules: pd.DataFrame) -> pd.DataFrame:
+    return limits_of(rules, tuple(RULE_COLUMNS[1:])).rename(columns={"subject": RULE_COLUMNS[0]})
+
+
+def _known_rules(name: str) -> None:
+    if name not in RULE_SETS:
+        raise ValueError(f"no rule set {name!r}; known: {sorted(RULE_SETS)}")
+
+
+def packaged_rules(name: str | None) -> pd.DataFrame | None:
+    """The rule set ``name`` from its file, as :func:`clean` takes it - a row per factor; ``None`` for no name."""
+    if name is None:
+        return None
+    _known_rules(name)
+    return _as_limits(read_rules(RULE_FILES[name]))
+
+
+def shared_rules(cache: ResearchCache, name: str | None) -> pd.DataFrame | None:
+    """The rule set ``name`` from the shared tables (through the cache), as :func:`clean` takes it.
+
+    What a run reads: the rules everyone shares (``eqr load-rules`` wrote them from the same file, and refuses a file
+    that has changed since).
+    """
+    if name is None:
+        return None
+    _known_rules(name)
+    return _as_limits(cached_rules(cache, name))
+
+
+def removed_by_rules(table: pd.DataFrame, rules: pd.DataFrame | None) -> pd.DataFrame:
+    """What :func:`clean` takes out of an uncleaned ``table``, per factor that has a rule.
+
+    ``[values, below, above, financials, removed]`` by factor: its values before cleaning, how many lie below the lower
+    limit and above the upper one, how many go because the factor leaves financials out, and the share removed.
+    """
+    columns = ["values", "below", "above", "financials", "removed"]
+    if rules is None or rules.empty:
+        return pd.DataFrame(columns=columns, dtype=float).rename_axis("factor")
+    cleaned = clean(table, rules)
+    rows = {}
+    for name, its in rules.groupby("barings_metric_name"):
+        if name not in table.columns:
+            continue
+        x = table[name].to_numpy(dtype=float)
+        had = ~np.isnan(x)
+        gone = had & np.isnan(cleaned[name].to_numpy(dtype=float))
+        with np.errstate(invalid="ignore"):
+            below = gone & (x < its["lower_limit"].min())
+            above = gone & (x > its["upper_limit"].max())
+        rows[str(name)] = {
+            "values": int(had.sum()),
+            "below": int(below.sum()),
+            "above": int(above.sum()),
+            "financials": int((gone & ~below & ~above).sum()),
+            "removed": float(gone.sum() / had.sum()) if had.any() else 0.0,
+        }
+    return pd.DataFrame.from_dict(rows, orient="index", columns=columns).rename_axis("factor")
 
 
 def clean(table: pd.DataFrame, rules: pd.DataFrame | None = None) -> pd.DataFrame:
-    """``table`` with values outside each factor's limits set missing (``generate_clean_factors``).
+    """``table`` with values outside each factor's limits set missing.
 
-    ``rules``: ``[barings_metric_name, lower_limit, upper_limit, exclude_financials]`` (Barings' ``metric_rules``;
+    ``rules``: ``[barings_metric_name, lower_limit, upper_limit, exclude_financials]`` (Barings' limits;
     missing limits are not enforced). ``exclude_financials`` 1 leaves out banks, insurers and other financials, 2 banks
     and insurers only. Several rules for one factor keep a value any of them keeps. Without rules nothing changes.
     """
@@ -770,13 +841,13 @@ def clean(table: pd.DataFrame, rules: pd.DataFrame | None = None) -> pd.DataFram
     return out
 
 
-# ---------------------------------------------------------------- composites (metrics.py 6919-9100, as coded)
+# ---------------------------------------------------------------- composites, as coded
 
 _DD = "date"
 
 
 def _pct_rank(df: pd.DataFrame, col: str, keys: list[str], ascending: bool = False) -> np.ndarray:
-    """Production's percentile rank: ``ceil(rank(pct) * 100)`` within ``keys``; 1 = the highest value by default."""
+    """The strategy's percentile rank: ``ceil(rank(pct) * 100)`` within ``keys``; 1 = the highest value by default."""
     r = df.groupby(keys)[col].rank(pct=True, ascending=ascending)
     inner = np.where(r == 0, 1, np.ceil(r * 100))
     return np.where(df[col].notna(), inner, np.nan).astype(float)
@@ -803,7 +874,7 @@ def _groups(industry: pd.Series, mapping: Mapping[str, int]) -> pd.Series:
 
 
 def _column(df: pd.DataFrame, name: str) -> pd.Series:
-    """A factor column, all missing where it is not built yet (production would need it; it is null here)."""
+    """A factor column, all missing where it is not built yet (the original would need it; it is null here)."""
     return df[name] if name in df.columns else pd.Series(np.nan, index=df.index)
 
 
@@ -819,7 +890,7 @@ VALUE_INPUTS = [
 
 
 def value_composite(table: pd.DataFrame) -> pd.DataFrame:
-    """``pct_rank_value_composite`` and its financials-neutral version (``pct_rank_value_composite``, 6919-7236).
+    """``pct_rank_value_composite`` and its financials-neutral version.
 
     Financials score on earnings (NTM, else trailing) and book yield; the others on six yields (four needed).
     """
@@ -878,7 +949,7 @@ GROWTH_INPUTS = [
 
 
 def growth_composite(table: pd.DataFrame) -> pd.DataFrame:
-    """``pct_rank_growth_composite`` (``pct_rank_growth_composite``, 7239-7578).
+    """``pct_rank_growth_composite``.
 
     Ranks within banks & insurers, and the rest; cash-flow, EPS, shareholder-yield and sustainable growth scores.
     The sustainable-growth score needs the NTM term (as coded, even its two-term fallback), so without estimates the
@@ -953,7 +1024,7 @@ QUALITY_INPUTS = [
 
 
 def quality_composite(table: pd.DataFrame) -> pd.DataFrame:
-    """``pct_rank_quality_composite`` with its alpha and defensive halves (``pct_rank_quality_composite``, 7581-8491).
+    """``pct_rank_quality_composite`` with its alpha and defensive halves.
 
     Banks, insurers & other financials, and the rest, each scored on its own inputs; as coded, the volatility, loan
     loss, loans-to-deposits, non-performing-loan and accruals-change inputs are ranked high-is-good (not negated).
@@ -1111,7 +1182,7 @@ def quality_composite(table: pd.DataFrame) -> pd.DataFrame:
 
 
 def population_z(table: pd.DataFrame, col: str) -> pd.Series:
-    """``(x - mean) / sqrt(mean(x^2) - mean^2)`` per date (Spark's averages: the population standard deviation)."""
+    """``(x - mean) / sqrt(mean(x^2) - mean^2)`` per date (the population standard deviation)."""
     x = _column(table, col)
     by_day = x.groupby(table[_DD])
     mean = by_day.transform("mean")
@@ -1129,7 +1200,7 @@ def _sample_z(x: pd.Series, by: pd.Series) -> pd.Series:
 
 
 def momentum_composite(table: pd.DataFrame) -> pd.Series:
-    """``zscore_momentum_composite`` (8494-8658): the 1-12 month returns combined.
+    """``zscore_momentum_composite``: the 1-12 month returns combined.
 
     Each return's population z-score is standardised again (sample standard deviation) and clipped at +/-3; the
     average of those, where three or more exist, is standardised and clipped the same way.
@@ -1142,7 +1213,10 @@ def momentum_composite(table: pd.DataFrame) -> pd.Series:
 
 
 REVISIONS_1_MTH = "zscore_earnings_revisions_1_mth"
-#: QGARP's inputs and weights as coded in production.
+#: The 1-month revisions measured from the consensus (:func:`~.barings_estimates.consensus_revision_factors`): ours, a
+#: survivorship-free stand-in for :data:`REVISIONS_1_MTH` in backtests - never for a screen of today's companies.
+CONSENSUS_REVISIONS_1_MTH = "zscore_consensus_revisions_1_mth"
+#: QGARP's inputs and weights: Barings'.
 QGARP_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("pct_rank_quality_alpha", 0.2),
     ("pct_rank_quality_defensive", 0.1),
@@ -1150,9 +1224,165 @@ QGARP_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("pct_rank_value_composite", 0.3),
     (REVISIONS_1_MTH, 0.1),
 )
-#: What QGARP may weigh: production's inputs first (in production's order, so its sums are unchanged), then the
-#: other composites - momentum among them - for variants.
-QGARP_INPUTS = tuple(dict.fromkeys([name for name, _ in QGARP_WEIGHTS] + COMPOSITES[:-1]))
+#: What QGARP may weigh: Barings' inputs first (in Barings' order, so its sums are unchanged), then the
+#: other composites - momentum among them - and the consensus revisions, for variants.
+QGARP_INPUTS = tuple(dict.fromkeys([name for name, _ in QGARP_WEIGHTS] + COMPOSITES[:-1] + [CONSENSUS_REVISIONS_1_MTH]))
+
+#: The kinds of calculation a factor or composite is, with what each means (for a reader of the triage table).
+CALCULATION_KINDS: dict[str, str] = {
+    "ratio": "one figure divided by another on the date (a yield, a margin, leverage, a return on capital)",
+    "growth rate": "a figure's change over a year (or from last year's figure to a forecast), over its size",
+    "compound growth rate": "the yearly growth rate that compounds to the change over two to five years",
+    "change in a ratio": "a ratio now less the same ratio a year (or three years) before",
+    "average of ratios": "the mean of a ratio over the last three years",
+    "product of ratios": "return on equity times the share of profits kept (not paid as dividends)",
+    "ratio of growth rates": "profit growth divided by sales growth",
+    "standard deviation": "how much a series varied: of yearly ratios over five years, or of weekly / monthly returns",
+    "coefficient of variation": "a standard deviation divided by the size of the mean",
+    "regression t-statistic": "the t-statistic of the trend (slope) of a year's log weekly prices",
+    "price return": "the share price's change over 1 to 12 months, without dividends",
+    "revision breadth": "(analysts raising their forecast - analysts lowering it) / analysts, over one or four months",
+    "count of signs": "how many of the last six months' revision breadths were positive, less how many negative",
+    "standardised change": "a forecast's change divided by the analysts' disagreement (their standard deviation)",
+    "percentage change": "the change in the consensus forecast over one or three months, over its size",
+    "change over price": "the change in the consensus forecast over the month, divided by the share price",
+    "level": "an amount itself, not divided by anything (market capitalisation)",
+    "z-score": "(value - the date's mean) / the date's standard deviation, clipped at +/-3",
+    "percentile rank": "a position among the date's members, 1 = best, of averaged factor ranks",
+}
+
+
+def _kinds(kind: str, names: Sequence[str]) -> dict[str, str]:
+    return dict.fromkeys(names, kind)
+
+
+#: Each built factor's and each composite's kind of calculation (:data:`CALCULATION_KINDS`), from its formula.
+CALCULATIONS: dict[str, str] = {
+    **_kinds(
+        "ratio",
+        [
+            *(
+                n
+                for n in CURRENT_FACTORS
+                if n not in ("market_capitalization", "sales_growth_hist", "dividend_growth_hist")
+            ),
+            "free_cash_flow_yield",
+            "free_cash_flow_conversion",
+            "cash_flow_from_financing_to_total_assets",
+            "extraordinary_credit_to_operating_income",
+            "extraordinary_charge_to_operating_income",
+            "unusual_items_to_operating_income",
+            "net_income_to_risk_weighted_assets",
+            "net_interest_income_to_net_loan",
+            "interest_income_to_interest_expense",
+            "non_interest_income_to_non_interest_expense",
+            "loan_loss_provisions_to_net_loans",
+            "non_performing_loans_to_equity_and_loan_loss_provision",
+            "return_on_equity",
+            "return_on_invested_capital",
+            "return_on_assets",
+            "accruals",
+            "earnings_yield_3_year_hist",
+            "earnings_yield_5_year_hist",
+            "ebit_yield_3_year_hist",
+            "ebit_yield_5_year_hist",
+            "earnings_yield_ntm",
+            "earnings_yield_ltm",
+            "earnings_yield_fy1",
+            "earnings_yield_fy2",
+            "earnings_yield_fy3",
+            "ebit_yield_fy1",
+            "ebit_yield_fy2",
+            "ebit_yield_fy3",
+            "ebit_yield_ntm",
+            "ebit_yield_ltm",
+            "sales_yield_ntm",
+            "return_on_equity_ntm",
+            "dividend_yield_ntm",
+        ],
+    ),
+    **_kinds(
+        "growth rate",
+        [
+            "sales_growth_hist",
+            "dividend_growth_hist",
+            "eps_growth_1_year_hist",
+            "accruals_year_on_year_change",
+            "eps_growth_fy0_to_fy1",
+            "eps_growth_fy1_to_fy2",
+            "eps_growth_fy2_to_fy3",
+            "eps_growth_ltm_to_ntm",
+            "ebit_growth_ltm_to_ntm",
+            "ebit_growth_fy1_to_fy2",
+            "ebit_growth_fy2_to_fy3",
+            "sales_growth_ltm_to_ntm",
+        ],
+    ),
+    **_kinds(
+        "compound growth rate",
+        [
+            "eps_growth_3_year_hist_cagr",
+            "eps_growth_5_year_hist_cagr",
+            "ebit_growth_3_year_hist_cagr",
+            "ebit_growth_5_year_hist_cagr",
+            "eps_growth_fy1_to_fy3",
+            "ebit_growth_fy1_to_fy3",
+            "sales_growth_fy1_to_fy3",
+        ],
+    ),
+    **_kinds(
+        "change in a ratio",
+        [
+            "cash_flow_growth_1_year_change",
+            "cash_flow_growth_3_year_change",
+            "operating_cash_flow_growth_1_year_change",
+            "operating_cash_flow_growth_3_year_change",
+            "shareholder_yield_growth_hist",
+            "shareholder_yield_growth_3_year_hist",
+            "return_on_assets_1_year_change",
+            "cash_flow_growth_ltm_to_ntm",
+        ],
+    ),
+    "sustainable_growth_3_year_average": "average of ratios",
+    "sustainable_growth": "product of ratios",
+    "sustainable_growth_ntm": "product of ratios",
+    "operating_leverage": "ratio of growth rates",
+    **_kinds(
+        "standard deviation",
+        [
+            "return_on_equity_5_year_vol",
+            "return_on_invested_capital_5_year_vol",
+            "return_on_assets_5_year_vol",
+            "net_income_margin_5_year_vol",
+            "1_year_volatility",
+            "price_return_stability",
+        ],
+    ),
+    "net_income_5_year_stability": "coefficient of variation",
+    "eps_uncertainty": "coefficient of variation",
+    "regression_momentum_1_year": "regression t-statistic",
+    **_kinds("price return", [f"{m}_mth_price_return_{c}" for m in RETURN_HORIZONS for c in ("local", "usd")]),
+    "earnings_revisions_1_mth": "revision breadth",
+    "earnings_revisions_4_mth": "revision breadth",
+    "earnings_revision_persistence_6mth": "count of signs",
+    "standardised_unexpected_earnings": "standardised change",
+    "eps_ntm_1mth_chg": "percentage change",
+    "eps_ntm_3mth_chg": "percentage change",
+    "consensus_revisions_1_mth": "change over price",
+    "consensus_revisions_4_mth": "change over price",
+    "market_capitalization": "level",
+    **_kinds(
+        "z-score",
+        ["zscore_momentum_composite", REVISIONS_COMPOSITE, REVISIONS_1_MTH, CONSENSUS_REVISIONS_1_MTH],
+    ),
+    **_kinds("percentile rank", [n for n in COMPOSITES if n.startswith("pct_rank_")]),
+}
+
+
+def calculation(name: str) -> str:
+    """The kind of calculation factor or composite ``name`` is (:data:`CALCULATIONS`); ``""`` for one not listed."""
+    return CALCULATIONS.get(name, "")
+
 
 QgarpWeights = Mapping[str, float] | Sequence[tuple[str, float]]
 
@@ -1182,12 +1412,14 @@ def qgarp(
     weights: QgarpWeights = QGARP_WEIGHTS,
     fix_revisions_direction: bool = False,
 ) -> pd.Series:
-    """``pct_rank_qgarp`` (8931-9100): 1 = best.
+    """``pct_rank_qgarp``: 1 = best.
 
     Each input is re-ranked so 1 = best - a percentile rank ascending (1 = best already), a z-score (higher = better)
     descending - a missing rank counts as 50.5, and the weighted sum is ranked again. As coded, the 1-month revisions
     z-score is ranked ascending too, which rewards the worst revisions; ``fix_revisions_direction`` ranks it descending
-    like the other z-scores (not production). ``weights`` defaults to production's (:data:`QGARP_WEIGHTS`).
+    like the other z-scores (a correction to the original). The consensus revisions, which stand in for those
+    revisions in a backtest, are ranked the same way, so a variant changes only where the revisions come from.
+    ``weights`` defaults to Barings' (:data:`QGARP_WEIGHTS`).
     """
     df = pd.DataFrame({_DD: dates})
     total = pd.Series(0.0, index=comp.index)
@@ -1195,7 +1427,7 @@ def qgarp(
         df[name] = _column(comp, name)
         if name.startswith("pct_rank_"):
             ascending = True
-        elif name == REVISIONS_1_MTH:
+        elif name in (REVISIONS_1_MTH, CONSENSUS_REVISIONS_1_MTH):  # the stand-in is ranked as the original
             ascending = not fix_revisions_direction
         else:
             ascending = False
@@ -1220,15 +1452,35 @@ def composites(
         axis=1,
     )
     out[REVISIONS_1_MTH] = population_z(table, "earnings_revisions_1_mth")
+    out[CONSENSUS_REVISIONS_1_MTH] = population_z(table, "consensus_revisions_1_mth")
     out[REVISIONS_COMPOSITE] = _column(table, REVISIONS_COMPOSITE)
     out["pct_rank_qgarp"] = qgarp(out, table[_DD], weights=weights, fix_revisions_direction=fix_revisions_direction)
-    return out[[_DD, "listing_id", *COMPOSITES]]
+    return out[[_DD, "listing_id", *COMPOSITES, REVISIONS_1_MTH, CONSENSUS_REVISIONS_1_MTH]]
 
 
 def score_panel(comp: pd.DataFrame, name: str) -> pd.DataFrame:
     """``date x listing_id`` of one composite with higher meaning better: a percentile rank (1 = best) is negated."""
     wide = comp.pivot(index=_DD, columns="listing_id", values=name)  # noqa: PD010 - one row each
     return -wide if name.startswith("pct_rank_") else wide
+
+
+def factor_panels(table: pd.DataFrame, names: Sequence[str]) -> dict[str, pd.DataFrame]:
+    """``{factor: date x listing_id}`` of ``table``'s columns ``names``: what a triage of each factor alone takes.
+
+    A factor keeps its own sign; a composite's percentile rank is negated, so higher is better. A factor with no value
+    at all (one whose data is not loaded) is left out.
+    """
+    out = {}
+    for name in names:
+        if name in table.columns and table[name].notna().any():
+            out[name] = (
+                score_panel(table, name)
+                if name in COMPOSITES
+                else table.pivot(  # noqa: PD010 - one row each
+                    index=_DD, columns="listing_id", values=name
+                )
+            )
+    return out
 
 
 def coverage_over_time(table: pd.DataFrame, names: Sequence[str]) -> pd.DataFrame:
@@ -1249,10 +1501,14 @@ def coverage(table: pd.DataFrame, names: Sequence[str]) -> pd.DataFrame:
 
 @dataclass(frozen=True)
 class BaringsGarpConfig:
-    """Every setting of a run (hashed into its registry entry); the factor rules are production's, fixed.
+    """Every setting of a run (hashed into its registry entry); the factor rules are the strategy's, fixed.
 
-    ``qgarp_weights`` (production's by default) takes a mapping or pairs of any :data:`QGARP_INPUTS`; it is stored
+    ``qgarp_weights`` (Barings' by default) takes a mapping or pairs of any :data:`QGARP_INPUTS`; it is stored
     in :func:`qgarp_weights`' one spelling, so equal weights are one config and every change is a new trial.
+    ``rules`` names the cleaning limits (a key of :data:`RULE_SETS`); ``None`` cleans nothing, as every run before
+    the limits were added did. ``benchmark`` names a fund by its Yahoo symbol (``"SPY"``), measured with its
+    dividends; ``None`` takes the universe's own benchmark - right for the S&P 1500 (SPTM, a fund), but the S&P 500's
+    is the index level, without dividends.
     """
 
     family: str = "barings_qgarp"
@@ -1265,12 +1521,29 @@ class BaringsGarpConfig:
     qgarp_weights: QgarpWeights = QGARP_WEIGHTS
     fix_revisions_direction: bool = False
     estimates: bool = True  # False: the first version, before the I/B/E/S estimates were loaded
+    rules: str | None = None  # the cleaning limits, by name: "gems-2026-11" holds Barings'
+    benchmark: str | None = None  # a fund's Yahoo symbol, measured with its dividends; None: the universe's own
     price_vendors: tuple[str, ...] = field(default_factory=lambda: vendor_preferences().prices)
     fundamentals_vendor: str | tuple[str, ...] = field(default_factory=lambda: vendor_preferences().fundamentals)
     open_holdout: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "qgarp_weights", qgarp_weights(self.qgarp_weights))  # checked before any loading
+        if self.rules is not None and self.rules not in RULE_SETS:
+            raise ValueError(f"no rule set {self.rules!r}; known: {sorted(RULE_SETS)}")
+
+
+def registered_settings(config: BaringsGarpConfig) -> dict[str, Any]:
+    """``config`` as the registry stores and hashes it.
+
+    A setting added later (``rules``, ``benchmark``) is stored only when it is used: a run that does not use it is
+    stored as it was before the setting existed, so it keeps its hash and repeating it is not counted as a new trial.
+    """
+    settings = asdict(config)
+    for later in ("rules", "benchmark"):
+        if settings[later] is None:
+            del settings[later]
+    return settings
 
 
 @dataclass(frozen=True)
@@ -1288,9 +1561,31 @@ class BaringsGarpResult:
     returns: pd.DataFrame
     metrics: dict[str, Any]
     run_id: int | None = None
+    #: what the cleaning limits took out, per factor (:func:`removed_by_rules`); empty without limits
+    removed: pd.DataFrame | None = None
 
 
-def gems_factors(
+def raw_factors(
+    cache: ResearchCache,
+    data: UniverseData,
+    *,
+    price_vendors: tuple[str, ...] | None = None,
+    fundamentals_vendor: str | tuple[str, ...] | None = None,
+    with_estimates: bool = True,
+) -> pd.DataFrame:
+    """The :func:`factor_table` of ``data``'s members on its rebalance dates, before any cleaning."""
+    inputs = load_qgarp_inputs(
+        cache, data, price_vendors=price_vendors, fundamentals_vendor=fundamentals_vendor, with_estimates=with_estimates
+    )
+    members = data.members.reindex(inputs.dates).fillna(False).astype(bool)
+    panels = account_factors(inputs) | price_factors(inputs.adjusted, inputs.dates)
+    if inputs.estimates is not None:
+        panels |= estimate_factors(inputs.estimates) | consensus_revision_factors(inputs.estimates)
+        panels[REVISIONS_COMPOSITE] = revisions_composite(inputs.estimates, members)
+    return factor_table(panels, members, inputs.industry)
+
+
+def qgarp_factors(
     cache: ResearchCache,
     data: UniverseData,
     *,
@@ -1300,32 +1595,37 @@ def gems_factors(
     with_estimates: bool = True,
 ) -> pd.DataFrame:
     """The cleaned :func:`factor_table` of ``data``'s members on its rebalance dates."""
-    inputs = load_gems_inputs(
+    raw = raw_factors(
         cache, data, price_vendors=price_vendors, fundamentals_vendor=fundamentals_vendor, with_estimates=with_estimates
     )
-    members = data.members.reindex(inputs.dates).fillna(False).astype(bool)
-    panels = account_factors(inputs) | price_factors(inputs.adjusted, inputs.dates)
-    if inputs.estimates is not None:
-        panels |= estimate_factors(inputs.estimates)
-        panels[REVISIONS_COMPOSITE] = revisions_composite(inputs.estimates, members)
-    return clean(factor_table(panels, members, inputs.industry), rules)
+    return clean(raw, rules)
+
+
+def _scored(
+    raw: pd.DataFrame, data: UniverseData, config: BaringsGarpConfig, rules: pd.DataFrame | None
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    table = clean(raw, rules)
+    comp = composites(table, weights=config.qgarp_weights, fix_revisions_direction=config.fix_revisions_direction)
+    score = score_panel(comp, "pct_rank_qgarp").reindex(index=data.rebalances, columns=data.close.columns)
+    return table, comp, score
 
 
 def qgarp_scores(
     cache: ResearchCache, data: UniverseData, config: BaringsGarpConfig, *, rules: pd.DataFrame | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """``(factors, composites, score)`` on ``data``'s rebalance dates; ``score`` is QGARP with higher meaning better."""
-    table = gems_factors(
+    """``(factors, composites, score)`` on ``data``'s rebalance dates; ``score`` is QGARP with higher meaning better.
+
+    The factors are cleaned by ``rules`` when given, else by the rule set ``config`` names (none by default),
+    read from the shared tables.
+    """
+    raw = raw_factors(
         cache,
         data,
-        rules=rules,
         price_vendors=config.price_vendors,
         fundamentals_vendor=config.fundamentals_vendor,
         with_estimates=config.estimates,
     )
-    comp = composites(table, weights=config.qgarp_weights, fix_revisions_direction=config.fix_revisions_direction)
-    score = score_panel(comp, "pct_rank_qgarp").reindex(index=data.rebalances, columns=data.close.columns)
-    return table, comp, score
+    return _scored(raw, data, config, rules if rules is not None else shared_rules(cache, config.rules))
 
 
 def qgarp_book(
@@ -1345,7 +1645,9 @@ def run_barings_garp(
 ) -> BaringsGarpResult:
     """Fence, load, build the factors and composites, hold the best QGARP names, backtest, and register the run.
 
-    ``rules`` (Barings' cleaning limits) changes the scores, so a run with them should get its own ``family``.
+    The factors are cleaned by the rule set ``config.rules`` names - a setting, so a run with limits is a trial of
+    its own in the family. ``rules`` passes other limits as a frame instead: they change the scores without changing
+    the registered settings, so such a run should get its own ``family``.
     """
     if config.weighting not in WEIGHTINGS:
         raise ValueError(f"unknown weighting {config.weighting!r}; choose from {WEIGHTINGS}")
@@ -1359,16 +1661,26 @@ def run_barings_garp(
         fundamentals_vendor=config.fundamentals_vendor,
         history_days=HISTORY_DAYS,
     )
-    table, comp, score = qgarp_scores(cache, data, config, rules=rules)
+    limits = rules if rules is not None else shared_rules(cache, config.rules)
+    raw = raw_factors(
+        cache,
+        data,
+        price_vendors=config.price_vendors,
+        fundamentals_vendor=config.fundamentals_vendor,
+        with_estimates=config.estimates,
+    )
+    table, comp, score = _scored(raw, data, config, limits)
     book = qgarp_book(data, config, score, data.rebalances)
     returns = data.returns[data.returns.index <= pd.Timestamp(config.end)]
     result = run_backtest(
         book, returns, cost_bps=data.cost_bps, borrow_bps=data.borrow_bps, buy_tax_bps=data.buy_tax_bps
     )
+    benchmark = data.benchmark if config.benchmark is None else vendor_returns(cache, config.benchmark, total=True)
     metrics, run_id = finish_run(
-        result, data.benchmark, asdict(config), family=config.family, engine=engine, holdout=holdout
+        result, benchmark, registered_settings(config), family=config.family, engine=engine, holdout=holdout
     )
     members = data.members.reindex(data.rebalances).fillna(False).astype(bool)
+    removed = removed_by_rules(raw, limits)
     return BaringsGarpResult(
-        config, table, comp, score, book, result, data.benchmark, members, returns, metrics, run_id
+        config, table, comp, score, book, result, benchmark, members, returns, metrics, run_id, removed
     )

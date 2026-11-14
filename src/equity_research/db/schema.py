@@ -48,6 +48,8 @@ VENDORS: dict[str, tuple[int, str]] = {
     "norgate": (5, "Norgate Data"),
     "tiingo": (6, "Tiingo"),
     "simfin": (7, "SimFin"),
+    "sraf": (8, "Notre Dame SRAF (Loughran-McDonald dictionary)"),
+    "repository": (9, "Corrections kept in this repository"),
 }
 
 
@@ -171,6 +173,36 @@ research_run = sa.Table(
     sa.Column("notes", sa.UnicodeText, nullable=True),
     sa.Index(None, "config_hash"),
     sa.Index(None, "family"),
+    schema="research",
+)
+
+#: The kinds of rule a set may hold: a factor's cleaning limits and exclusions (Barings' QGARP limits), a weight
+#: in a composite, a selection threshold. A new kind is a new migration.
+RULE_TYPES = ("lower_limit", "upper_limit", "exclude_financials", "invert", "weight", "threshold", "setting")
+
+# A strategy's rules, shared by everyone: a named set and its rules. A set is never changed once loaded (a run names
+# the set it used, so the set must still say what it said then) - a changed rule is a new set, under a new code.
+rule_set = sa.Table(
+    "rule_set",
+    metadata,
+    sa.Column("rule_set_id", sa.Integer, sa.Identity(), primary_key=True),
+    sa.Column("code", sa.String(64), nullable=False, unique=True),  # what a run's settings name: "gems-2026-11"
+    sa.Column("strategy", sa.String(64), nullable=False),  # the family of runs it belongs to: "barings_qgarp"
+    sa.Column("description", sa.Unicode(400), nullable=False),
+    sa.Column("source", sa.Unicode(400), nullable=False),  # where the rules came from
+    sa.Column("checksum", sa.CHAR(64), nullable=False),  # sha256 of its rules: a set is loaded once, unchanged
+    sa.Column("loaded_at", instant(), nullable=False, server_default=UTC_NOW),
+    schema="research",
+)
+
+strategy_rule = sa.Table(
+    "strategy_rule",
+    metadata,
+    sa.Column("rule_set_id", sa.Integer, sa.ForeignKey("research.rule_set.rule_set_id"), primary_key=True),
+    sa.Column("subject", sa.String(128), primary_key=True),  # what the rule is about: a factor, a composite, "*"
+    sa.Column("rule_type", sa.String(32), primary_key=True),
+    sa.Column("value", sa.Float, nullable=False),
+    sa.CheckConstraint("rule_type IN (" + ", ".join(f"'{t}'" for t in RULE_TYPES) + ")", name="rule_type"),
     schema="research",
 )
 
@@ -381,6 +413,52 @@ financial_fact = sa.Table(
     sa.Column("filing_ref", sa.String(32), nullable=True),
     *_provenance(),
     sa.CheckConstraint(_in("period_type", PERIOD_TYPES), name="period_type"),
+    schema="fund",
+)
+
+
+# ---------------------------------------------------------------- fund: filing documents and their text
+# Every filing the SEC's index lists for a company (annual and quarterly reports, current reports), with the instant
+# EDGAR accepted it - when the world could read it - and, for an 8-K, the events it reports (item codes such as 2.02,
+# results; 5.02, an officer leaving). The text itself stays in the raw zone (a 10-K is ~1.5 MB of HTML; forty
+# thousand of them would fill the database); ``text_measure`` holds what research reads of it: word counts by
+# dictionary category, similarity to the company's previous report, a language model's tone - each named by its
+# ``method``, so a new dictionary or model re-measures from the raw zone.
+
+DOCUMENT_FORMS = ("10-K", "10-K405", "10-KT", "10-K/A", "10-K405/A", "10-KT/A", "10-Q", "10-Q/A", "8-K", "8-K/A")
+TEXT_SECTIONS = ("all", "mdna", "risk")
+
+document = sa.Table(
+    "document",
+    metadata,
+    sa.Column("issuer_id", sa.Integer, sa.ForeignKey("ref.issuer.issuer_id"), primary_key=True),
+    _vendor(primary_key=True),
+    sa.Column("filing_ref", sa.String(32), primary_key=True),  # SEC accession number
+    sa.Column("cik", sa.Integer, nullable=False),
+    sa.Column("form", sa.String(16), nullable=False),
+    sa.Column("filing_date", sa.Date, nullable=False),
+    sa.Column("report_date", sa.Date, nullable=True),  # a report's period end, an 8-K's event date
+    sa.Column("published_at", instant(), nullable=False),  # accepted by EDGAR (UTC)
+    sa.Column("items", sa.String(96), nullable=True),  # an 8-K's item codes, comma-separated
+    sa.Column("primary_document", sa.String(160), nullable=True),
+    *_provenance(),
+    sa.CheckConstraint(_in("form", DOCUMENT_FORMS), name="form"),
+    sa.Index(None, "issuer_id", "published_at"),
+    schema="fund",
+)
+
+text_measure = sa.Table(
+    "text_measure",
+    metadata,
+    sa.Column("issuer_id", sa.Integer, sa.ForeignKey("ref.issuer.issuer_id"), primary_key=True),
+    _vendor(primary_key=True),
+    sa.Column("filing_ref", sa.String(32), primary_key=True),
+    sa.Column("section", sa.String(8), primary_key=True),
+    sa.Column("measure", sa.String(24), primary_key=True),
+    sa.Column("method", sa.String(24), nullable=False),
+    sa.Column("value", sa.Float, nullable=False),
+    *_provenance(),
+    sa.CheckConstraint(_in("section", TEXT_SECTIONS), name="section"),
     schema="fund",
 )
 

@@ -71,6 +71,10 @@ TABLES: tuple[CachedTable, ...] = (
     CachedTable(schema.estimate, incremental=True),
     CachedTable(schema.estimate_revision, incremental=True),
     CachedTable(schema.estimate_actual, incremental=True),
+    CachedTable(schema.document, incremental=True),
+    CachedTable(schema.text_measure, incremental=True),
+    CachedTable(schema.rule_set, incremental=False),
+    CachedTable(schema.strategy_rule, incremental=False),
 )
 CHUNK_ROWS = 500_000
 

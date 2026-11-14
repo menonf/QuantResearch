@@ -146,6 +146,44 @@ jumps AS (
       AND COALESCE(p.currency, '') = COALESCE(p.prev_currency, '')  -- a change of quote currency explains its move
 )
 """
+#: An index member's price halving in a day (a fall of 1.8x to 2.5x - below the 2.5x of the jumps above) with no
+#: split or spin-off within 5 days, where something else says the shares changed: a sibling share line of the company
+#: starting to trade in the 30 days before it or the 5 after (a new class handed to holders: Alphabet's class C of
+#: 2014, Under Armour's of 2016 - trading "when issued" a week or two before), or the line's own count of shares
+#: rising 1.7x or more across it (a missed split: C.H. Robinson's 2-for-1 of 2005). Research books such a day as a
+#: loss of half the holding. A real collapse with new shares issued shows up too (Guaranty Financial, 2008).
+_SUSPECT_HALVINGS = """
+WITH p AS (
+    SELECT b.listing_id, b.vendor_id, b.trade_date, b.[close],
+           LAG(b.[close]) OVER (PARTITION BY b.listing_id, b.vendor_id ORDER BY b.trade_date) AS prev_close
+    FROM market.price_bar b
+    JOIN ref.listing l ON l.listing_id = b.listing_id AND l.instrument_type = 'equity'
+),
+halved AS (
+    SELECT p.listing_id, p.vendor_id, p.trade_date, p.prev_close, p.[close], l.issuer_id
+    FROM p JOIN ref.listing l ON l.listing_id = p.listing_id
+    WHERE p.[close] > 0 AND p.prev_close / p.[close] BETWEEN 1.8 AND 2.5
+      AND EXISTS (SELECT 1 FROM ref.index_membership m WHERE m.listing_id = p.listing_id
+                  AND p.trade_date >= m.start_date AND (m.end_date IS NULL OR p.trade_date < m.end_date))
+      AND NOT EXISTS (SELECT 1 FROM market.corporate_action a WHERE a.listing_id = p.listing_id
+                      AND a.action_type IN ('split', 'spinoff') AND ABS(DATEDIFF(day, a.ex_date, p.trade_date)) <= 5)
+),
+first_px AS (SELECT listing_id, MIN(trade_date) AS first_trade FROM market.price_bar GROUP BY listing_id),
+suspect AS (
+    SELECT h.*, sib.listing_id AS new_line_id, cb.shares AS shares_before, ca.shares AS shares_after
+    FROM halved h
+    OUTER APPLY (SELECT TOP 1 s.listing_id FROM ref.listing s JOIN first_px f ON f.listing_id = s.listing_id
+                 WHERE s.issuer_id = h.issuer_id AND s.listing_id <> h.listing_id
+                   AND f.first_trade BETWEEN DATEADD(day, -30, h.trade_date) AND DATEADD(day, 5, h.trade_date)) sib
+    OUTER APPLY (SELECT TOP 1 c.shares FROM market.share_count c WHERE c.listing_id = h.listing_id
+                   AND c.kind = 'outstanding' AND c.as_of_date < DATEADD(day, -3, h.trade_date)
+                   AND c.as_of_date >= DATEADD(day, -100, h.trade_date) ORDER BY c.as_of_date DESC) cb
+    OUTER APPLY (SELECT TOP 1 c.shares FROM market.share_count c WHERE c.listing_id = h.listing_id
+                   AND c.kind = 'outstanding' AND c.as_of_date > DATEADD(day, 3, h.trade_date)
+                   AND c.as_of_date <= DATEADD(day, 100, h.trade_date) ORDER BY c.as_of_date) ca
+    WHERE sib.listing_id IS NOT NULL OR ca.shares >= 1.7 * cb.shares
+)
+"""
 #: A member (now or in the past) whose prices stop more than 45 days before its membership does: a leaver the
 #: vendor's event list missed, or a listing whose prices are missing.
 _MEMBERS_AFTER_LAST_PRICE = """
@@ -172,6 +210,8 @@ PROVENANCED = (
     "fund.estimate",
     "fund.estimate_revision",
     "fund.estimate_actual",
+    "fund.document",
+    "fund.text_measure",
 )
 _OVERLAPPING_SPELLS = """
 WITH overlaps AS (
@@ -227,6 +267,16 @@ CORE_CHECKS: tuple[Check, ...] = (
         describe="days a share moved 2.5x or more that no split or spin-off explains",
         examples=_JUMPS + "SELECT TOP 50 j.*, l.name FROM jumps j JOIN ref.listing l ON l.listing_id = j.listing_id "
         "ORDER BY ABS(LOG(j.[close] * COALESCE(j.ratio, 1.0) / j.prev_close)) DESC",
+    ),
+    Check(
+        "suspect_halvings",
+        _SUSPECT_HALVINGS + "SELECT CAST(COUNT(*) AS FLOAT) FROM suspect",
+        warn=0,
+        fail=1e9,  # some are real (a collapse with new shares issued): each one is looked at, none stops a load
+        higher_is_better=False,
+        describe="days a member's price halved, unexplained, as a new share line began or its share count doubled",
+        examples=_SUSPECT_HALVINGS + "SELECT TOP 50 s.*, l.name FROM suspect s "
+        "JOIN ref.listing l ON l.listing_id = s.listing_id ORDER BY s.trade_date",
     ),
     Check(
         "members_after_last_price",
@@ -315,6 +365,17 @@ CORE_CHECKS: tuple[Check, ...] = (
         fail=0.50,
         higher_is_better=False,
         describe="matched companies with no financial statements loaded (none matched, as in London: nothing missing)",
+    ),
+    Check(
+        "annual_reports_without_text_measures",
+        """SELECT COALESCE(CAST(SUM(CASE WHEN m.batch_id IS NULL THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(*), 0), 0)
+           FROM ingest.batch b
+           LEFT JOIN (SELECT DISTINCT batch_id FROM fund.text_measure) m ON m.batch_id = b.batch_id
+           WHERE b.dataset = 'annual_report'""",
+        warn=0.01,
+        fail=0.10,
+        higher_is_better=False,
+        describe="landed 10-K documents with no text measures (a load stopped between landing and measuring)",
     ),
 )
 

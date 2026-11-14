@@ -8,6 +8,7 @@ spaced at least ``1 / max_per_second`` apart; 429 / 5xx responses wait (``Retry-
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,9 @@ COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 CIK_CUSIP_MAP_URL = "https://raw.githubusercontent.com/leoliu0/cik-cusip-mapping/master/cik-cusip-maps.csv"
 #: The same file through a CDN, for when GitHub's file host is unreachable (it resets connections from some networks).
 CIK_CUSIP_MAP_MIRROR = "https://cdn.jsdelivr.net/gh/leoliu0/cik-cusip-mapping@master/cik-cusip-maps.csv"
+#: A company's filing index, and an older page of it (named by the index).
+SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+SUBMISSIONS_PAGE_URL = "https://data.sec.gov/submissions/{name}"
 
 
 class SecClient:
@@ -41,12 +45,14 @@ class SecClient:
         self._min_interval = 1.0 / max_per_second
         self._max_retries = max_retries
         self._last = 0.0
+        self._lock = threading.Lock()  # several threads may share one client: the spacing holds across them
 
     def _pace(self) -> None:
-        wait = self._min_interval - (time.monotonic() - self._last)
-        if wait > 0:
-            time.sleep(wait)
-        self._last = time.monotonic()
+        with self._lock:
+            wait = self._min_interval - (time.monotonic() - self._last)
+            if wait > 0:
+                time.sleep(wait)
+            self._last = time.monotonic()
 
     def get(self, url: str, *, stream: bool = False, timeout: float = 120.0) -> requests.Response:
         """GET ``url``; 429 / 5xx wait and retry; other errors raise."""

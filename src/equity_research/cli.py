@@ -13,6 +13,7 @@ from equity_research.db.engine import get_engine, make_engine
 from equity_research.db.migrate import upgrade_to_latest
 from equity_research.pipelines.copy_database import copy_database
 from equity_research.pipelines.load_benchmarks import load_benchmarks
+from equity_research.pipelines.load_corrections import load_corrections
 from equity_research.pipelines.load_estimates import STEPS as ESTIMATE_STEPS
 from equity_research.pipelines.load_estimates import load_estimates
 from equity_research.pipelines.load_estimates import probe as probe_estimates
@@ -21,7 +22,9 @@ from equity_research.pipelines.load_lseg import START as LSEG_START
 from equity_research.pipelines.load_lseg import load_lseg, probe, probe_uk
 from equity_research.pipelines.load_norgate import load_norgate
 from equity_research.pipelines.load_norgate import probe as probe_norgate
+from equity_research.pipelines.load_rules import load_rules
 from equity_research.pipelines.load_sec import load_sec
+from equity_research.pipelines.load_sec_text import load_sec_text
 from equity_research.pipelines.load_simfin import load_simfin
 from equity_research.pipelines.load_simfin import probe as probe_simfin
 from equity_research.pipelines.load_tiingo import load_tiingo
@@ -141,6 +144,20 @@ def load_financedatabase_command(verbose: bool = False) -> None:
     typer.echo(json.dumps(load_financedatabase(get_engine()), indent=2, default=str))
 
 
+@app.command("load-corrections")
+def load_corrections_command(verbose: bool = False) -> None:
+    """Write the repository's corporate-action corrections (events no vendor recorded) under vendor ``repository``."""
+    _logging(verbose)
+    typer.echo(json.dumps(load_corrections(get_engine()), indent=2, default=str))
+
+
+@app.command("load-rules")
+def load_rules_command(verbose: bool = False) -> None:
+    """Write the repository's strategy rule sets to the shared tables (a set already loaded is left alone)."""
+    _logging(verbose)
+    typer.echo(json.dumps(load_rules(get_engine()), indent=2, default=str))
+
+
 @app.command("set-key")
 def set_key_command(vendor: str) -> None:
     """Store a vendor's API key (tiingo, simfin) in the OS keyring, typed without echo - never on the command line."""
@@ -182,6 +199,32 @@ def load_sec_command(verbose: bool = False, max_age_days: float = 7.0) -> None:
     """Load SEC XBRL filings and financial facts (as reported) for the issuers in the database."""
     _logging(verbose)
     report = load_sec(get_engine(), max_age_days=max_age_days)
+    typer.echo(json.dumps(report, indent=2, default=str))
+
+
+@app.command("load-sec-text")
+def load_sec_text_command(
+    *,
+    verbose: bool = False,
+    since: str = "2003-01-01",
+    max_age_days: float = 30.0,
+    issuers: str = typer.Option("", help="comma-separated issuer ids: a trial on some companies only"),
+    workers: int = typer.Option(0, help="processes measuring text (0: all CPUs but one)"),
+    tone: bool = typer.Option(False, help="also score MD&A tone with FinBERT (dependency group text)"),
+    tone_device: str = typer.Option("cpu", help="where FinBERT runs: cpu, or cuda with a CUDA build of torch"),
+) -> None:
+    """Load SEC filing indexes and annual reports, and measure their text (dictionary counts, similarity)."""
+    _logging(verbose)
+    chosen = [int(x) for x in issuers.split(",") if x.strip()] or None
+    report = load_sec_text(
+        get_engine(),
+        since=since,
+        max_age_days=max_age_days,
+        issuers=chosen,
+        workers=workers or None,
+        tone=tone,
+        tone_device=tone_device,
+    )
     typer.echo(json.dumps(report, indent=2, default=str))
 
 

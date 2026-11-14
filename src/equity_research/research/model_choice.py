@@ -34,7 +34,6 @@ them.
 from __future__ import annotations
 
 import hashlib
-import math
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass
@@ -45,8 +44,8 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.engine import Engine
 
+from equity_research.research import evaluation, ml
 from equity_research.research import factors as fx
-from equity_research.research import ml
 from equity_research.research.backtest import run_backtest
 from equity_research.research.data import UniverseData
 from equity_research.research.registry import config_hash, fence
@@ -244,13 +243,7 @@ def rank_ic(predictions: pd.DataFrame, target: pd.DataFrame, members: pd.DataFra
 
     Missing where fewer than :data:`MIN_NAMES` members have both (no model yet, or the year not yet over).
     """
-    known = members.reindex(index=predictions.index, columns=predictions.columns, fill_value=False).astype(bool)
-    y = target.reindex(index=predictions.index, columns=predictions.columns)
-    both = known & predictions.notna() & y.notna()
-    p = predictions.where(both).rank(axis=1)
-    r = y.where(both).rank(axis=1)
-    ic = p.corrwith(r, axis=1)  # Pearson correlation of ranks = Spearman's
-    return ic.where(both.sum(axis=1) >= MIN_NAMES).rename("ic")
+    return evaluation.ic_series(predictions, target, members, min_names=MIN_NAMES)
 
 
 def information_coefficients(
@@ -266,15 +259,7 @@ def newey_west_t(values: pd.Series, lags: int = HAC_LAGS) -> float:
     Overlapping year-ahead returns make neighbouring months' ICs share eleven of their twelve months, so the plain
     t-statistic (which assumes independent months) overstates the evidence by about the square root of the overlap.
     """
-    x = values.dropna().to_numpy(dtype=float)
-    n = len(x)
-    if n < 2:
-        return float("nan")
-    e = x - x.mean()
-    variance = float(e @ e) / n
-    for lag in range(1, min(lags, n - 1) + 1):
-        variance += 2 * (1 - lag / (lags + 1)) * float(e[lag:] @ e[:-lag]) / n
-    return float(x.mean() / math.sqrt(variance / n)) if variance > 0 else float("nan")
+    return evaluation.newey_west_t(values, lags)
 
 
 def ic_summary(ic: pd.DataFrame) -> pd.DataFrame:

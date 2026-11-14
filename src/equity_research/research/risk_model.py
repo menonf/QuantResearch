@@ -703,3 +703,12 @@ def significance(tstats: pd.DataFrame, threshold: float = 2.0) -> pd.Series:
     """
     out: pd.Series = (tstats.abs() > threshold).mean().sort_values(ascending=False)
     return out
+
+
+def style_panels(exposures: Exposures) -> dict[str, pd.DataFrame]:
+    """``style -> date x listing_id``: each style's exposures on the exposure dates (for comparing with signals)."""
+    out = {}
+    for style in exposures.styles:
+        rows = {d: exposures.loadings[d][style] for d in exposures.dates if style in exposures.loadings[d]}
+        out[style] = pd.DataFrame(rows).T.sort_index()
+    return out

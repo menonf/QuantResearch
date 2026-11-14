@@ -7,7 +7,9 @@
     member = membership_mask(memberships, close.index, close.columns)
 
 Adjusted series are derived here from unadjusted closes and corporate actions - never taken from a vendor - so every
-vendor's prices are treated alike and a new split does not rewrite stored history.
+vendor's prices are treated alike and a new split does not rewrite stored history. Prices and returns are adjusted for
+splits and for the capital changes that lower the price (spin-offs, rights issues: :func:`return_factor`); share
+counts for splits only - a spin-off does not change how many shares a holder has.
 """
 
 from __future__ import annotations
@@ -112,9 +114,86 @@ def latest_counts(
     return panel.reindex(index=dates, columns=listings)
 
 
-def split_adjusted(close: pd.DataFrame, actions: pd.DataFrame) -> pd.DataFrame:
-    """Closes expressed in today's shares (a 4-for-1 split divides earlier closes by 4)."""
-    return close / split_factor(actions, pd.DatetimeIndex(close.index), close.columns)
+#: The version of the way returns and adjusted prices are derived here. Cached research artifacts are keyed by it
+#: (:mod:`~equity_research.research.store`), so a change rebuilds them instead of reading results of the old method.
+#: 1: splits only; 2 (2026-11-14): spin-offs and rights issues too (:func:`return_factor`).
+RETURNS_VERSION = 2
+
+#: How many trading days after the vendor's date a spin-off's price drop may fall on. LSEG dates many US spin-offs a
+#: day early (the distribution date, not the ex-date) and some London ones two (Prudential's demerger of M&G, 2019):
+#: of the drops of 5 % or more the price confirms, 99 % of London's and 93 % of the US's fall on the vendor's date or
+#: the two trading days after; further out a match is as likely chance.
+SPINOFF_DAYS_AFTER = 2
+#: How closely the day's move must match a spin-off's drop to confirm it: within half the drop (log). Unconfirmed, it
+#: is left out, like a split the price does not confirm - applied on the wrong day it would book a gain no holder had
+#: (HSBC's rights issue of 2009, dated by LSEG six trading days before its price fell).
+SPINOFF_TOLERANCE = 0.5
+
+
+def spinoff_days(actions: pd.DataFrame, close: pd.DataFrame, days_after: int = SPINOFF_DAYS_AFTER) -> pd.DataFrame:
+    """``[listing_id, ex_date, ratio]``: the spin-offs that lower the price, each on the day its price drops.
+
+    ``spinoff`` rows are every capital change near 1 (a spin-off, a rights issue, a bonus issue): ``ratio`` > 1 lowers
+    the price by ``1 / ratio - 1``. Each is placed on the vendor's date or one of the ``days_after`` trading days after
+    it, whichever the split-adjusted price moves nearest that drop on, and kept only when that move confirms it (within
+    :data:`SPINOFF_TOLERANCE` of the drop); one dated before the panel's second day is kept on its own date (it scales
+    every day alike). Rows with ``ratio`` < 1 - London's share consolidations that come with a special payout - are
+    left out: the price does not rise by them (checked 2026-11-14: applying them made 80 % of their days' returns
+    worse).
+    """
+    rows = actions[(actions["action_type"] == "spinoff") & actions["ratio"].notna() & (actions["ratio"] > 1)]
+    rows = rows[rows["listing_id"].astype(int).isin(close.columns)]
+    out = pd.DataFrame(
+        {
+            "listing_id": rows["listing_id"].astype(int).to_numpy(),
+            "ex_date": pd.to_datetime(rows["ex_date"]).to_numpy(),
+            "ratio": rows["ratio"].astype(float).to_numpy(),
+        }
+    )
+    if out.empty:
+        return out
+    adjusted = split_adjusted(close[out["listing_id"].unique()], actions, spinoffs=False)
+    moves = np.log(adjusted / adjusted.shift(1))
+    days = pd.DatetimeIndex(close.index)
+    placed: list[pd.Timestamp | None] = []
+    for lid, ex_date, ratio in zip(out["listing_id"], out["ex_date"], out["ratio"], strict=True):
+        first = int(days.searchsorted(ex_date))
+        if first == 0:  # before the panel: it scales every day alike, and the first day has no move to compare
+            placed.append(pd.Timestamp(ex_date))
+            continue
+        move = moves[lid].reindex(days[first : first + 1 + days_after]).dropna()
+        drop = -np.log(ratio)
+        miss = np.abs(move.to_numpy() - drop)
+        best = int(np.argmin(miss)) if len(move) else -1
+        placed.append(move.index[best] if best >= 0 and miss[best] < SPINOFF_TOLERANCE * abs(drop) else None)
+    out = out.assign(ex_date=pd.DatetimeIndex(placed))
+    return out[out["ex_date"].notna()].reset_index(drop=True)
+
+
+def return_factor(close: pd.DataFrame, actions: pd.DataFrame, spinoffs: bool = True) -> pd.DataFrame:
+    """Per day and listing: the split factor (:func:`split_factor`) times the spin-off ratios after the day.
+
+    Dividing a day's close by it gives a price whose day-to-day changes are the holder's: a spin-off's value is
+    treated as reinvested in the parent on its ex-date, the way index providers and CRSP treat it.
+    """
+    index = pd.DatetimeIndex(close.index)
+    factor = split_factor(actions, index, close.columns)
+    if not spinoffs:
+        return factor
+    days = pd.DatetimeIndex(factor.index)
+    for lid, ex_date, ratio in spinoff_days(actions, close).itertuples(index=False, name=None):
+        factor.loc[days < ex_date, lid] *= ratio
+    return factor
+
+
+def split_adjusted(close: pd.DataFrame, actions: pd.DataFrame, spinoffs: bool = True) -> pd.DataFrame:
+    """Closes expressed in today's shares (a 4-for-1 split divides earlier closes by 4).
+
+    Closes before a spin-off are scaled down by its value too, unless ``spinoffs=False`` (splits only).
+    """
+    if not spinoffs:
+        return close / split_factor(actions, pd.DatetimeIndex(close.index), close.columns)
+    return close / return_factor(close, actions)
 
 
 def dividends_panel(actions: pd.DataFrame, index: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
@@ -125,21 +204,22 @@ def dividends_panel(actions: pd.DataFrame, index: pd.DatetimeIndex, columns: pd.
     return panel.reindex(index=index, columns=columns).fillna(0.0)
 
 
-def total_returns(close: pd.DataFrame, actions: pd.DataFrame) -> pd.DataFrame:
-    """Daily total returns: ``(adj_t + dividend_t / factor_t) / adj_{t-1} - 1``.
+def total_returns(close: pd.DataFrame, actions: pd.DataFrame, spinoffs: bool = True) -> pd.DataFrame:
+    """Daily total returns: ``(adj_t + dividend_t / factor_t) / adj_{t-1} - 1``, ``factor`` from :func:`return_factor`.
 
-    NaN where either day has no price - a gap is not a zero return.
+    NaN where either day has no price - a gap is not a zero return. ``spinoffs=False``: adjusted for splits only, so
+    a spin-off's day books the parent's drop as a loss (the returns before 2026-11-14).
     """
     index = pd.DatetimeIndex(close.index)
-    factor = split_factor(actions, index, close.columns)
+    factor = return_factor(close, actions, spinoffs)
     adjusted = close / factor
     dividends = dividends_panel(actions, index, close.columns) / factor
     return (adjusted + dividends) / adjusted.shift(1) - 1.0
 
 
-def price_returns(close: pd.DataFrame, actions: pd.DataFrame) -> pd.DataFrame:
-    """Daily split-adjusted price returns (no dividends)."""
-    return split_adjusted(close, actions).pct_change(fill_method=None)
+def price_returns(close: pd.DataFrame, actions: pd.DataFrame, spinoffs: bool = True) -> pd.DataFrame:
+    """Daily adjusted price returns (no dividends)."""
+    return split_adjusted(close, actions, spinoffs).pct_change(fill_method=None)
 
 
 def membership_mask(memberships: pd.DataFrame, index: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:

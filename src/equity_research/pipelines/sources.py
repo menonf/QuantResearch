@@ -22,6 +22,7 @@ from sqlalchemy.engine import Engine
 from equity_research.db import schema
 from equity_research.db.schema import vendor_id
 from equity_research.pipelines.load_benchmarks import load_benchmarks
+from equity_research.pipelines.load_corrections import load_corrections
 from equity_research.pipelines.load_estimates import load_estimates, refresh_estimates
 from equity_research.pipelines.load_estimates import probe as probe_estimates
 from equity_research.pipelines.load_financedatabase import load_financedatabase
@@ -30,6 +31,7 @@ from equity_research.pipelines.load_lseg import probe as probe_lseg
 from equity_research.pipelines.load_lseg import probe_uk as probe_lseg_uk
 from equity_research.pipelines.load_norgate import load_norgate
 from equity_research.pipelines.load_norgate import probe as probe_norgate
+from equity_research.pipelines.load_rules import load_rules
 from equity_research.pipelines.load_sec import load_sec
 from equity_research.pipelines.load_simfin import load_simfin
 from equity_research.pipelines.load_simfin import probe as probe_simfin
@@ -82,6 +84,11 @@ def refresh_start(newest: dt.date) -> dt.date:
     reading back what it landed. The longer window costs nothing: LSEG counts requests, not days.
     """
     return (newest - dt.timedelta(days=PRICE_OVERLAP_DAYS)).replace(day=1)
+
+
+def _repository(engine: Engine) -> dict[str, Any]:
+    """The repository's own facts: its corporate-action corrections and its strategy rule sets."""
+    return {"corrections": load_corrections(engine), "rules": load_rules(engine)}
 
 
 SOURCES: dict[str, Source] = {
@@ -153,6 +160,14 @@ SOURCES: dict[str, Source] = {
         refresh=lambda engine: load_simfin(engine, max_age_days=SIMFIN_MAX_AGE_DAYS),
         needs="an API key (`eqr set-key simfin`); run after sec (its figures are checked against the SEC's)",
         probe=probe_simfin,
+    ),
+    "repository": Source(
+        "repository",
+        "what this repository states itself: corporate actions no vendor recorded (Alphabet's class C shares of 2014), "
+        "the strategies' rule sets",
+        build=_repository,
+        refresh=_repository,
+        needs="after the price sources: a distribution's ratio comes from both lines' closes on its ex-date",
     ),
     "sec": Source(
         "sec",

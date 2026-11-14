@@ -32,7 +32,7 @@ latent factors -> causal -> model analysis -> backtest -> portfolio -> risk -> c
 * Hold-out: 2025-01-01 onward (22 months by now) - the book's "evidence boundary". Only the final step opens it.
 * Breadth: ~1,500 names, not ~3,200 - by the Fundamental Law the same IC buys less; the feasibility step shows how much.
 * Compute: CPU only (no usable GPU). Deep models are sized for it: smaller windows, weekly cadence where the book
-  offers it.
+  offers it. *Since 2026-11-08 an RTX 4060 Laptop GPU (8 GB, CUDA) works and is used wherever it helps - see the log.*
 
 ## Chapters: in scope, later, out
 
@@ -71,7 +71,7 @@ do not hold yet; where it can be had free or from LSEG they are scoped in "Other
 ## Design within the existing architecture
 
 * **No new architecture for P0-P7.** Pure functions in `research/`, a notebook per phase (in
-  `notebooks/5_machine_learning/`, numbered 5.1 on) that only sets parameters and shows results, unit tests on
+  `notebooks/6_machine_learning/`, numbered 6.1 on) that only sets parameters and shows results, unit tests on
   synthetic panels with known answers.
 * **Artifact store** (`research/store.py`): labels, features and predictions as Parquet under
   `data/<db name>/research/<kind>/<name>-<hash>.parquet`, each with a sidecar recording its config, the data snapshot
@@ -126,81 +126,86 @@ the working database (Azure `equity_research`), and the regression check (rule 5
 Book: `06_strategy_definition/02_cv_foundations`, `07_defining_the_learning_task/03_label_methods`, `05_signal_evaluation`,
 `06_ic_inference`, `07_multiple_testing`; case study `01_feasibility_analysis`, `02_labels`, `05_evaluation`.
 
-- [ ] Baseline for the regression check (rule 5); a git commit so runs record a code version (today every run's
+- [x] Baseline for the regression check (rule 5); a git commit so runs record a code version (today every run's
       `code_version` is empty - the repository has no commits)
-- [ ] `research/store.py` - the artifact store
-- [ ] `research/labels.py` - forward returns (1, 5, 21 days; 1 month), triple-barrier, trend-scanning
-- [ ] `research/validation.py` - walk-forward folds with purging (label horizon) and an embargo; nested CV for tuning
-- [ ] `research/evaluation.py` - IC series (rank and Pearson), Newey-West t-statistics, IC decay by horizon, quantile
+- [x] `research/store.py` - the artifact store
+- [x] `research/labels.py` - forward returns (1, 5, 21 days; 1 month), triple-barrier, trend-scanning
+- [x] `research/validation.py` - walk-forward folds with purging (label horizon) and an embargo; nested CV for tuning
+- [x] `research/evaluation.py` - IC series (rank and Pearson), Newey-West t-statistics, IC decay by horizon, quantile
       spreads, turnover and rank autocorrelation, Benjamini-Hochberg false-discovery control, a triage ledger
-- [ ] registry helper: register each point of a search as a trial
-- [ ] Notebook 5.1 *ML research protocol*: feasibility (breadth by date, move against cost, the folds)
+- [x] registry helper: register each point of a search as a trial (`registry.record_search`)
+- [x] Notebook 6.1 *ML research protocol*: feasibility (breadth by date, move against cost, the folds)
 
 ### P1 - Features (chapters 8, 9, 1)
 
 Book: `08_financial_features/01-07`, `09_model_based_features/02-14`; case studies `03_financial_features`,
 `04_model_based_features`.
 
-- [ ] `research/features.py` - price-volume families (momentum, reversal, volatility, liquidity: Amihud, Corwin-Schultz
-      and Roll spreads from daily bars), the fundamentals from `ratios.py` / `factors.py`, calendar
-- [ ] `research/model_features.py` - GARCH(1,1), HAR volatility, fractional differencing, Kalman trend, HMM regimes,
-      structural breaks (dependency group `ml`)
-- [ ] Notebook 5.2 *features*: every feature through `evaluation.py`; the triage ledger; overlap with existing factors
+- [x] `research/features.py` - price-volume families (momentum, reversal, volatility, liquidity: Amihud, Corwin-Schultz
+      and Roll spreads from daily bars), the fundamentals from `ratios.py` / `factors.py`, calendar. Corwin-Schultz
+      is not possible: our LSEG bars carry close and volume only (no high, low or open); Roll's spread needs closes
+- [x] `research/model_features.py` - GARCH(1,1), HAR volatility, fractional differencing, Kalman trend, HMM regimes,
+      structural breaks. No `ml` group needed: `arch` and `statsmodels` are base dependencies already
+- [x] Notebook 6.2 *features*: every feature through `evaluation.py`; the triage ledger; overlap with existing factors
       and the risk model's styles
 
 ### P2 - Linear baseline (chapter 11)
 
 Book: `11_ml_pipeline/01-08`; case studies `06_linear` / `05_linear`.
 
-- [ ] ridge, lasso, elastic net, logistic, fitted per fold; nested tuning; coefficient stability
-- [ ] conformal prediction intervals
-- [ ] Notebook 5.3 *linear models*, against an equal-weighted composite of the surviving features
+- [x] ridge, lasso, elastic net, logistic, fitted per fold; nested tuning; coefficient stability
+- [x] conformal prediction intervals
+- [x] Notebook 6.3 *linear models*, against an equal-weighted composite of the surviving features
 
 ### P3 - Gradient boosting (chapter 12)
 
 Book: `12_gradient_boosting/02, 04, 07, 08, 11`; case studies `07_gbm` / `06_gbm`.
 
-- [ ] LightGBM per fold; a grid over leaf profiles and losses, then Optuna (every trial registered)
-- [ ] TreeSHAP through LightGBM's `pred_contrib`; conformal intervals
-- [ ] Notebook 5.4 *gradient boosting*, against P2 and `ml.py`'s learned value
+- [x] LightGBM per fold; a grid over leaf profiles and losses, then Optuna (every trial registered)
+- [x] TreeSHAP through LightGBM's `pred_contrib`; conformal intervals
+- [x] Notebook 6.4 *gradient boosting*, against P2 and `ml.py`'s learned value
 
 ### P4 - From predictions to a strategy (chapters 16-20, 26)
 
 Book: `16_strategy_simulation/11-14`, `17_portfolio_construction/02, 03, 04, 06`, `18_transaction_costs/02, 09-11`,
 `19_risk_management/01, 02, 04, 07`, `20_strategy_synthesis/*`; case studies `16_backtest` to `22_strategy_analysis`.
 
-- [ ] entry schemes: daily top-K long-short, monthly deciles - through `backtest.py` (new functions, rule 1)
-- [ ] allocators: equal, inverse volatility, mean-variance on the risk model's covariance, HRP, Kelly scaling
-- [ ] cost grids and break-even costs; spread estimates from P1
-- [ ] risk overlays (volatility target, drawdown control), CVaR and historical VaR, signal drift
-- [ ] multiple testing beyond the DSR: Rademacher Anti-Serum, White's Reality Check
-- [ ] Fundamental Law diagnostics (IC, breadth, transfer coefficient -> Sharpe)
-- [ ] the hold-out step: refit the chosen configuration on history before 2025, trade 2025 onward once
-- [ ] Notebooks 5.5 *ML strategy* and 5.6 *strategy assessment*
+- [x] entry schemes: daily top-K long-short, monthly deciles - through `backtest.py` (new functions, rule 1). Top-K
+      is built (`allocation.top_k_book`) but not run: every signal is monthly, and 6.1 found a day's move covers 2.5
+      round trips
+- [x] allocators: equal, inverse volatility, mean-variance on the risk model's covariance, HRP, Kelly scaling
+- [x] cost grids and break-even costs; spread estimates from P1
+- [x] risk overlays (volatility target, drawdown control), CVaR and historical VaR, signal drift
+- [x] multiple testing beyond the DSR: Rademacher Anti-Serum, White's Reality Check (raw and studentised)
+- [x] Fundamental Law diagnostics (IC, breadth, transfer coefficient -> Sharpe)
+- [ ] the hold-out step: refit the chosen configuration on history before 2025, trade 2025 onward once - **left
+      for the owner's decision** (which strategy, if any; see 6.6's findings)
+- [x] Notebooks 6.5 *ML strategy* and 6.6 *strategy assessment*
 
 ### P5 - Latent factors (chapter 14)
 
 Book: `14_latent_factors/01-08`; case studies `13a_pca`, `13b_ipca`, `08a-08d`.
 
-- [ ] PCA and eigenportfolios, RP-PCA, IPCA
-- [ ] conditional autoencoder (Gu, Kelly, Xiu), supervised autoencoder, SDF (dependency group `deep`)
-- [ ] Notebook 5.7 *latent factors*: explained variance and pricing errors set against the BFRE risk model
+- [x] PCA and eigenportfolios, RP-PCA, IPCA
+- [x] conditional autoencoder (Gu, Kelly, Xiu), supervised autoencoder, SDF (dependency group `deep`). The supervised
+      autoencoder is left out: a second network for little extra here; the SDF is each model's tangency portfolio
+- [x] Notebook 6.7 *latent factors*: explained variance and pricing errors set against the BFRE risk model
 
 ### P6 - Deep learning (chapters 13, 12)
 
 Book: `13_dl_time_series/01, 03, 06, 10`, `12_gradient_boosting/03`; case studies `08_tabular_dl` to `12_dl_weekly`.
 
-- [ ] NLinear, LSTM, TSMixer (weekly cadence first, for the CPU); a TabM-style MLP ensemble on the features
-- [ ] fixed seeds, deterministic CPU training, every architecture registered
-- [ ] Notebook 5.8 *deep learning*, against P2 and P3
+- [x] NLinear, LSTM, TSMixer (weekly cadence first, for the CPU); a TabM-style MLP ensemble on the features
+- [x] fixed seeds, deterministic CPU training, every architecture registered
+- [x] Notebook 6.8 *deep learning*, against P2 and P3
 
 ### P7 - Causal ML (chapter 15)
 
 Book: `15_causal_estimation/03, 05, 11`; case studies `14_causal_dml` / `09_causal_dml`.
 
-- [ ] Double ML with cross-fitting (scikit-learn): the effect of 12-1 momentum with factor confounders
-- [ ] factor-zoo validation of the features that survived P1
-- [ ] Notebook 5.9 *causal ML*
+- [x] Double ML with cross-fitting (scikit-learn): the effect of 12-1 momentum with factor confounders
+- [x] factor-zoo validation of the features that survived P1
+- [x] Notebook 6.9 *causal ML*
 
 ### P8 - New data: macro, insiders, institutional holdings (chapter 4) - needs a decision
 
@@ -215,14 +220,18 @@ Book: `04_fundamental_alternative_data/03, 06, 07, 10`.
 
 Book: `10_text_feature_engineering/03, 06, 08, 09`, `22_rag_financial_research/01`, `23_knowledge_graphs/08`.
 
-- [ ] filing text from EDGAR (10-K, 10-Q, 8-K) in the raw zone; a document table with publication times
-- [ ] Loughran-McDonald sentiment, year-on-year 10-K change ("Lazy Prices"), FinBERT, 8-K event extraction
-- [ ] RAG and knowledge graphs only if wanted (an LLM's cost; keys in the keyring)
+- [x] filing text from EDGAR in the raw zone; a document table with publication times - every 10-K, 10-Q and 8-K
+      listed in `fund.document` (with the acceptance instant and an 8-K's items); the text of the 10-Ks only (the
+      owner's choice), 47,540 of them since 2003
+- [x] Loughran-McDonald sentiment, year-on-year 10-K change ("Lazy Prices"), 8-K event extraction - notebook 6.10
+- [x] FinBERT - 45,547 reports scored on the GPU, in the rebuilt local database; notebook 6.10 rerun with it
+- [ ] (not wanted, the owner's decision of 2026-11-08) RAG and knowledge graphs
 
 ### P10 - Optional
 
-- [ ] synthetic data for stress-testing strategies (chapter 5)
-- [ ] minute bars for the whole S&P 1500 (beyond A6's 115 names at 15 minutes): ~150 million rows a year, past SQL
+- [x] synthetic data for stress-testing strategies (chapter 5): `synthetic.py`, notebook 6.11
+- [ ] (not wanted, the owner's decision of 2026-11-08) minute bars for the whole S&P 1500 (beyond A6's 115 names at
+      15 minutes): ~150 million rows a year, past SQL
       Server Express's 10 GB a database, so they would live in Parquet only - an exception to "every canonical row
       is in SQL" that `ARCHITECTURE.md` would have to state
 
@@ -368,3 +377,110 @@ by migration with gates and audit rules, migrated in every local database (rule 
   left (shorter horizons, purged CV, feature triage) is P0-P1.
   The folder `5_analysis` now holds notebook 5.1, so this plan's `5_machine_learning` numbering (5.1-5.9) clashes:
   to settle before P0's notebook is written.
+* 2026-11-07 - P0 started. Numbering settled: `5_analysis` keeps 5.1-5.3 and this plan's notebooks become 6.1-6.9 in
+  `notebooks/6_machine_learning/`. Open decision 1 taken: the baseline commit `4e16099` (the reference PDFs in `docs/`
+  stay out of git), so runs from here record a code version.
+* 2026-11-07 - P0 done. `store.py`, `labels.py`, `validation.py`, `evaluation.py`, `regression.py` and
+  `registry.record_search`, with tests; `model_choice` now takes its IC and Newey-West t from `evaluation`. Regression
+  baseline taken on commit `4e16099`, data snapshot 2026-11-02T09:38:38 (7 strategy families rerun, the risk model
+  rebuilt: 188 numbers); measured again with P0's code: 0 differ. Notebook 6.1: three of nine known factors survive
+  Benjamini-Hochberg at 10 % against next month's return (issuance t 3.85, cash-flow yield 2.98, quality 2.42);
+  momentum and the earnings surprise are fast signals, low volatility, quality and issuance slow; a day's move covers
+  2.5 round trips, 63 days' 20 - P1 starts from monthly labels and slow signals.
+* 2026-11-07 - P1 built: `features.py` (16 price-volume features, the book's 18 ratios and 5 account extras, calendar),
+  `model_features.py` (GARCH, HAR, fractional differencing, Kalman trend, break statistic, market regime) and
+  notebook 6.2; features kept in the artifact store (kind `features`, 45 company features, 360,361 member-months).
+  Triage against next month's return, 2005-2024, Benjamini-Hochberg at 10 % over 45 features: two discoveries, both
+  existing factors - share-count change (t -3.85; the issuance factor, rank correlation -1.00) and ROCE (t +2.99;
+  0.83 with quality). Nine near-misses at |t| 2.0-2.5 (profitability, volatility in five forms, sales growth, zero
+  days). Valuation ratios and every momentum measure about zero at this horizon. P2's yardstick: an equal-weighted
+  composite of issuance and ROCE.
+  Regression check after P1: 188 numbers, 0 differ (`regression.py` now reads every registered run before the
+  first rerun, as the serverless database paused mid-check once).
+* 2026-11-08 - P2 built: `linear.py` (ridge, lasso, elastic net, logistic; nested purged tuning; coefficient
+  stability; split conformal; the composite) and notebook 6.3, 27 trials in `ml4t_linear_monthly`. Out of sample
+  2015-2024 against next month's return: logistic IC +0.0236 (t 2.67), ridge +0.0139, elastic net +0.0087, lasso
+  +0.0053; the composite of issuance and ROCE +0.0249 (t 3.18; flattered: chosen by a triage that saw the test years).
+  No model beats it (logistic -0.0013, t -0.18), at four times its turnover. Conformal 90 % intervals cover 89 %, 30
+  times wider than the predictions vary. A flat forecast now scores IC 0 in every tuning loop (`ic_flat_zero`).
+  Dependency group `ml` added (lightgbm 4.7.0, optuna 5.0.0; the core libraries unmoved).
+* 2026-11-08 - P7 built: `causal.py` (DML with cross-fitting on purged date blocks, date-clustered errors; OLS
+  comparisons; the factor zoo with Benjamini-Hochberg) and notebook 6.9. Momentum 12-1, 2005-2024: no effect, alone
+  (-0.09 %, t -0.22), with linear controls or by DML (-0.05 %, t -0.15), in either half. Factor zoo of the 11
+  triage survivors and near-misses, each against all the others: only zero-return days (t -3.21), the GARCH forecast
+  (-2.84) and idiosyncratic volatility (-2.60) keep an effect; share-count change (t -1.54) and ROCE (-0.03) do not -
+  the low-volatility / illiquidity effect is the common thread of P1-P7.
+* 2026-11-08 - P5 built: `latent.py` (managed portfolios; PCA, RP-PCA, IPCA by ALS; observed factors; total R2,
+  pricing error, SDF Sharpe, walk-forward 2015-2024), `autoencoder.py` (CA1 on torch) and notebook 6.7. Dependency
+  group `deep` added (torch 2.15.0 CPU; the core libraries unmoved). IPCA with 5 factors: total R2 98.2 %, pricing
+  error 0.011 % a month, SDF Sharpe 1.29 - better on all three than BFRE's 24 factors (94.5 %, 0.020 %, 0.30) or its
+  market and styles (94.5 %, 0.021 %, 0.89). RP-PCA prices better than PCA. The autoencoder (one seed, CPU-sized)
+  stalled near one factor's worth (92.0 %). The market carries 92 % of the managed portfolios' second moment.
+* 2026-11-08 - P3 built: `boosting.py` (LightGBM grid of 3 losses x 3 leaf profiles tuned per fold; Optuna, 40 trials
+  on 2005-2014; TreeSHAP; conformal) and notebook 6.4, 51 trials in `ml4t_gbm_monthly`. Huber with large trees won 9
+  folds of 10; LambdaRank's validation IC was negative. Out of sample 2015-2024: GBM grid IC +0.0286 (t 2.74), Optuna
+  +0.0265 (t 2.56) - the best so far, but not significantly above the composite (+0.0037, t 0.29) or logistic
+  (+0.0050, t 0.40); only above 3.4's learned value (+0.0041; difference t 2.15). Top-minus-bottom fifth +0.62-0.73 %
+  a month (twice the composite's) at 53-56 % turnover a month. SHAP: zero-return days, the fractionally differenced
+  price and the GARCH forecast lead in every fold. Validation +0.044 against +0.029 out of sample.
+* 2026-11-08 - P6 built: `deep.py` (weekly NLinear, LSTM, TSMixer on 52-week rank sequences; an 8-network MLP
+  ensemble on the features; seeded, deterministic, targets scaled for training) and notebook 6.8, 4 architectures in
+  `ml4t_deep`. Weekly ICs: NLinear +0.0071, LSTM +0.0060, TSMixer +0.0014 - all below last week's reversal (+0.0135,
+  t 2.04). MLP ensemble monthly IC +0.0219 (t 2.36): above ridge, lasso, elastic net (t 2.05-2.91), level with
+  logistic, GBM and the composite. Across P2, P3 and P6 (82 registered configurations) no model's IC is
+  distinguishable from the composite's.
+* 2026-11-08 - P4 built: `allocation.py` (decile and top-K books; equal, inverse volatility, HRP, mean-variance on
+  the risk model; volatility target, drawdown control, half Kelly), `ml_strategy.py` (backtests, registry family
+  `ml4t_strategy_monthly`, 44 strategies, runs 275-318) and `assessment.py` (cost grids, break-even, VaR/CVaR, IC
+  drift, transfer coefficient, White's Reality Check raw and studentised, Rademacher bounds); notebooks 6.5 and 6.6.
+  Every long-only equal-weighted book trails SPTM (-0.8 to -3.6 % a year); the best long-only is logistic
+  mean-variance (+1.4 %, IR 0.28, deflated 9 %); overlays all cost return. Best overall: the composite long-short
+  mean-variance (Sharpe 0.70, deflated 49 %, break-even at 3.0x costs). Boosting ranks best before costs (Sharpe
+  0.82 equal-weighted long-short) and loses it to turnover (0.20). Effective breadth 8-4,838 bets a year against
+  18,048 nominal. Reality Check: p 0.049 on raw means (dominated by the most volatile book), 0.129 studentised. The
+  Rademacher bound is vacuous at 119 months. The hold-out step is left for a decision.
+* 2026-11-08 - regression check after P2-P7: 188 numbers measured on the baseline's data snapshot, 0 differ. Gate:
+  ruff and mypy clean, 383 unit and 31 integration tests pass. Nothing since `4e16099` is committed (the owner's
+  choice); open for the owner: the hold-out step, P8-P10, A1-A7.
+* 2026-11-08 - the owner chose P9 and P10 with: 10-K text only (no 10-Q or 8-K text; 8-K item codes come from the
+  filing index), no RAG or knowledge graphs, no minute bars.
+* 2026-11-08 - P10 built: `synthetic.py` (stationary block bootstrap of whole days; a factor model of 5 principal
+  components with GARCH(1,1)-t factors and Student-t residuals; a two-state regime-switching factor model fitted by
+  Baum-Welch; stylized facts; a discriminator; books held on synthetic paths) and notebook 6.11. Realism: a
+  classifier tells bootstrap months from real ones 49 % of the time (chance), factor GARCH 78 %, regime 68 %; all
+  match the stocks' co-movement (0.28-0.29 against 0.30), the factor models miss single-stock volatility clustering.
+  Four 6.5 books on 200 paths per generator, which keep their exposures but break forecast-to-month: the real decade
+  beat 94-100 % of the factor models' paths for all four (96-100 % of bootstrap paths for the mean-variance long-short
+  books; 72 % for the composite's equal-weighted one, 69 % for the long-only logistic book). Without selection the
+  long-short books lose money on 89-100 % of factor paths (costs and borrowing 3.4-11 % a year). A year of crisis or
+  50 % more volatility deepens the long-only book's worst-twentieth drawdown to 64 % / 84 % (the index: 52 % / 73 %).
+* 2026-11-08 - the GPU (RTX 4060 Laptop, 8 GB) works after the owner repaired its driver; the owner asked for it to be
+  used wherever it helps. torch is now its CUDA build on Windows (2.15.0+cu132 from PyTorch's index, `[tool.uv.sources]`;
+  other platforms and every other package unchanged). `deep.train`/`predict`/`walk_forward_*`, `autoencoder.fit` and
+  FinBERT (`eqr load-sec-text --tone --tone-device cuda`) take a `device` keyword, default `cpu`, so cached CPU results
+  stand; `deep.best_device()` picks the GPU. Measured: FinBERT 0.08 s a report against 0.84 s, LSTM training
+  hundreds of times faster, the MLP ensemble twice, TSMixer the same, the autoencoder slower (a month of 1,500 stocks
+  is too small for a GPU) - it stays on the CPU. GPU and CPU predictions agree (correlation 1.000000; FinBERT within
+  5e-7).
+* 2026-11-08 - P9 loaded and assessed (notebook 6.10). `eqr load-sec-text`: 829,161 filings listed, 47,540 annual
+  reports landed and measured (3,013 companies); loads hit two EDGAR facts made code - a combined report is one
+  filing under two CIKs (fetched and landed once, measured for both companies), and Azure drops hour-long sessions
+  (a landing chunk is retried). Results: 11 of 33 text features are discoveries at a 10 % false-discovery rate, but
+  with the 45 features of 6.2 controlled for only the count of acquisition-or-disposal 8-Ks (item 2.01) keeps an
+  effect (double ML t -3.58): such companies trailed the rest by 0.36 % a month (t -3.91), in both halves. Lazy
+  Prices does not repeat (quintile spreads |t| < 0.9); the whole report's tone does nothing (IC t +0.07); most text
+  discoveries repeat balance-sheet strength, profitability or size. Caution: no asset-growth feature in 6.2. The
+  strategy candidates are unchanged; adding the event count would be a new trial, tested before the hold-out.
+* 2026-11-08 - Azure's free monthly compute ran out during the loads (error 42119): the database is paused until
+  2026-12-01, the owner's choice (no hurry). Pending then: the FinBERT write, `eqr checks` / `eqr audit`, the data
+  refresh, the hold-out. Research continues from the local cache meanwhile.
+* 2026-11-08 - the owner asked how to run a chosen strategy as a hybrid: a systematic monthly book that a person
+  reviews (vetoes only, each with a reason), tracked against the unvetoed shadow book. Designed in ARCHITECTURE.md
+  section 7 (schema `book`, `eqr rebalance` / `veto` / `approve`, paper before live); not built - B0-B3 wait for the
+  owner's review and for Azure (the migration), paper starts after the hold-out is opened.
+* 2026-11-13 - the owner chose not to wait for Azure: `equity_research_local` was rebuilt from the vendors (US and
+  London, two days of LSEG allowance), the 10-K text loaded with FinBERT (notebook 1.3, new), and notebooks 6.2 and
+  6.10 rerun on it. 6.2: the same two discoveries (share-count change t -3.87, ROCE t +2.89), numbers moved by
+  thousandths. 6.10: twelve text discoveries, still only the acquisition-or-disposal 8-K count survives the controls
+  (double ML t -3.51); FinBERT's tone points the expected way but is no discovery (IC +0.0057, t +1.60). The local
+  registry and artifact store start afresh: 6.1 and 6.3-6.9, 6.11 still to rerun on the rebuilt data.

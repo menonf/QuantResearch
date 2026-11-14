@@ -1,0 +1,7 @@
+ric,action_type,ex_date,ratio,distributed_ric,per_share,note
+TDS.N,spinoff,2005-05-17,,TDSs.N^A12,1,"Telephone and Data Systems: one Special Common share (TDS.S) per Common share, distributed May 2005; price halved 2005-05-17"
+CHRW.OQ,split,2005-10-17,2,,,"C.H. Robinson: 2-for-1 split, October 2005; shares outstanding 85.6m before, 171.0m after"
+GOOGL.OQ,spinoff,2014-04-03,,GOOG.OQ,1,"Alphabet (then Google): one Class C share (GOOG) per Class A share, ex 2014-04-03"
+WBD.OQ^J26,spinoff,2014-08-07,,DISCK.OQ^D22,1,"Discovery: one Series C share per Series A share, ex 2014-08-07 (Series A, now WBD)"
+DISCK.OQ^D22,split,2014-08-07,2,,,"Discovery: one Series C share per Series C share - a 2-for-1 split of the Series C line, ex 2014-08-07"
+UAA.N,spinoff,2016-04-08,,UA.N,1,"Under Armour: one Class C share (UA) per Class A share, ex 2016-04-08"

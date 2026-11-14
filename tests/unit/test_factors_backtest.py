@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from equity_research.research import backtest as bt
 from equity_research.research.backtest import active_performance, decile_returns, performance, run_backtest
 from equity_research.research.factors import combine, cross_sectional_z, magic_formula, momentum, net_issuance, quality
 from equity_research.research.portfolio import buffered_selection, quantile_book, rebalance_dates, weighted_by
@@ -199,3 +200,17 @@ def test_stamp_duty_is_paid_on_purchases_only() -> None:
     book = pd.DataFrame({1: [1.0, 0.0], 2: [-1.0, 0.0]}, index=[days[0], days[3]])
     result = run_backtest(book, returns, cost_bps=0.0, buy_tax_bps=50.0)
     assert result.costs.sum() == pytest.approx(0.005)  # the purchase of 1 only: no tax on a sale or on a short
+
+
+def test_periods_against_measures_the_book_before_and_from_the_hold_out() -> None:
+    days = pd.bdate_range("2024-01-01", "2025-12-31")
+    bench = pd.Series(0.0005, index=days)
+    book = pd.Series(np.where(days < pd.Timestamp("2025-01-01"), 0.0005, 0.001), index=days)  # ahead only from 2025
+    table = bt.periods_against(book, bench, "2025-01-01")
+    rows = {str(k): {str(c): float(v) for c, v in r.items()} for k, r in table.to_dict("index").items()}
+    before, after = rows["before 2025-01-01"], rows["from 2025-01-01"]
+    assert list(rows) == ["before 2025-01-01", "from 2025-01-01"]
+    assert before["months"] == 12 and after["months"] == 12
+    assert abs(before["active_return"]) < 1e-12  # the same returns: nothing added
+    assert after["active_return"] > 0.1
+    assert after["benchmark_cagr"] == pytest.approx(before["cagr"])

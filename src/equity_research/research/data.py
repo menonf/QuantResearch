@@ -341,6 +341,12 @@ def dividends_in(actions: pd.DataFrame, rates: pd.DataFrame, currency: str) -> p
     return out[~missing].drop(columns="currency").reset_index(drop=True)
 
 
+#: The vendor of the repository's own corrections (``ingest/corrections``), and how near (days) a vendor's own split
+#: or spin-off must be to a correction for the vendor's to stand alone.
+CORRECTIONS_VENDOR = "repository"
+CORRECTION_DAYS = 5
+
+
 def price_actions(
     actions: pd.DataFrame, bars: pd.DataFrame, price_vendors: tuple[str, ...], benchmarks: pd.Series
 ) -> pd.DataFrame:
@@ -348,14 +354,32 @@ def price_actions(
 
     A stock takes the actions of ``price_vendors``; a benchmark those of the vendor that supplied most of its prices -
     SPTM is priced by Yahoo alone, and without Yahoo's dividends and split its return would miss its dividends and
-    show the 2017 split as a crash.
+    show the 2017 split as a crash. A stock also takes the repository's corrections (:func:`with_corrections`).
     """
     is_benchmark = actions["listing_id"].isin(benchmarks.astype(int).tolist())
     counts = bars.groupby(["listing_id", "vendor"]).size().rename("bars").reset_index()
     priced_by = counts.sort_values("bars").drop_duplicates("listing_id", keep="last").set_index("listing_id")["vendor"]
     own = actions["vendor"] == actions["listing_id"].map(priced_by)
-    keep = (~is_benchmark & actions["vendor"].isin(price_vendors)) | (is_benchmark & own)
-    return actions.loc[keep].drop(columns="vendor").reset_index(drop=True)
+    stocks = with_corrections(actions[~is_benchmark], price_vendors)
+    return pd.concat([stocks, actions[is_benchmark & own]]).drop(columns="vendor").reset_index(drop=True)
+
+
+def with_corrections(actions: pd.DataFrame, vendors: Sequence[str]) -> pd.DataFrame:
+    """The actions of ``vendors`` and the repository's corrections they lack, with the ``vendor`` column.
+
+    A correction (an event no vendor recorded: Alphabet's class C shares of 2014) is taken unless ``vendors`` have a
+    split or spin-off of their own within :data:`CORRECTION_DAYS` of it - a vendor that records the event later must
+    not have it counted twice. Every reader of actions for prices or share counts goes through here.
+    """
+    taken = actions[actions["vendor"].isin(vendors)]
+    fixes = actions[actions["vendor"] == CORRECTIONS_VENDOR]
+    if fixes.empty:
+        return taken
+    capital = taken[taken["action_type"].isin(["split", "spinoff"])][["listing_id", "ex_date"]]
+    near = fixes.reset_index().merge(capital, on="listing_id", how="left", suffixes=("", "_vendor"))
+    gap = (pd.to_datetime(near["ex_date"]) - pd.to_datetime(near["ex_date_vendor"])).abs()
+    covered = set(near.loc[gap <= pd.Timedelta(days=CORRECTION_DAYS), "index"])
+    return pd.concat([taken, fixes[~fixes.index.isin(covered)]])
 
 
 def own_counts(counts: pd.DataFrame, price_vendors: tuple[str, ...]) -> pd.DataFrame:

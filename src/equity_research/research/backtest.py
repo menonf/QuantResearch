@@ -86,6 +86,33 @@ def monthly_pair(returns: pd.Series, benchmark: pd.Series) -> pd.DataFrame:
     return (1.0 + both).groupby(months).prod() - 1.0
 
 
+def periods_against(returns: pd.Series, benchmark: pd.Series, boundary: str | pd.Timestamp) -> pd.DataFrame:
+    """The book against ``benchmark`` before and from ``boundary`` (the hold-out's first day), one row each.
+
+    Columns: ``months``, the book's ``cagr`` / ``vol`` / ``max_drawdown``, the ``benchmark_cagr``, and
+    :func:`active_performance`'s measures, plus ``active_t`` - the t-statistic of the mean monthly difference (mean over
+    its standard error): with few months a large active return can still be noise.
+    """
+    start = pd.Timestamp(boundary)
+    rows = {}
+    for label, inside in (("before", returns.index < start), ("from", returns.index >= start)):
+        r, b = returns[inside], benchmark.reindex(returns.index)[inside]
+        pair = monthly_pair(r, b)
+        diff = pair["r"] - pair["b"]
+        t = float(diff.mean() / (diff.std() / np.sqrt(len(diff)))) if len(diff) > 1 and diff.std() > 0 else float("nan")
+        own = performance(r)
+        rows[f"{label} {start:%Y-%m-%d}"] = {
+            "months": len(diff),
+            "cagr": own["cagr"],
+            "vol": own["vol"],
+            "max_drawdown": own["max_drawdown"],
+            "benchmark_cagr": performance(b)["cagr"],
+            **active_performance(r, b),
+            "active_t": t,
+        }
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
 def active_performance(returns: pd.Series, benchmark: pd.Series) -> dict[str, float]:
     """Against ``benchmark``: what the choice of names added, measured on monthly returns.
 

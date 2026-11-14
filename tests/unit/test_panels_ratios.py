@@ -26,7 +26,10 @@ from equity_research.research.data import (
     vendor_items,
 )
 from equity_research.research.panels import (
+    latest_counts,
     membership_mask,
+    price_returns,
+    spinoff_days,
     split_adjusted,
     split_factor,
     total_returns,
@@ -60,6 +63,67 @@ def test_total_returns_bridge_the_split_and_add_dividends() -> None:
     r = total_returns(_close(), ACTIONS)[7]
     assert r.loc["2020-08-31"] == pytest.approx(129.0 / 124.75 - 1)  # no fake -74 % on the split day
     assert r.loc["2020-09-01"] == pytest.approx((130.0 + 1.0) / 129.0 - 1)
+
+
+SPIN_DAYS = pd.DatetimeIndex(pd.to_datetime(["2014-09-26", "2014-09-29", "2014-09-30", "2014-10-01", "2014-10-02"]))
+
+
+def _spin(ex_date: str, ratio: float) -> pd.DataFrame:
+    return pd.DataFrame(
+        {"listing_id": [3], "action_type": ["spinoff"], "ex_date": pd.to_datetime([ex_date]), "ratio": [ratio],
+         "amount": [np.nan]}
+    )  # fmt: skip
+
+
+def test_a_spin_off_is_reinvested_not_booked_as_a_loss() -> None:
+    # the parent's price drops by the spun-off part's value (ratio 1.25: a fifth of the value leaves)
+    close = pd.DataFrame({3: [100.0, 101.0, 80.0, 81.0, 82.0]}, index=SPIN_DAYS)
+    r = total_returns(close, _spin("2014-09-30", 1.25))[3]
+    assert r.loc["2014-09-30"] == pytest.approx(80.0 * 1.25 / 101.0 - 1)  # +-1 %, not -21 %
+    assert r.loc["2014-09-29"] == pytest.approx(0.01)
+    assert total_returns(close, _spin("2014-09-30", 1.25), spinoffs=False)[3].loc["2014-09-30"] == pytest.approx(
+        80.0 / 101.0 - 1
+    )
+    assert price_returns(close, _spin("2014-09-30", 1.25))[3].loc["2014-09-30"] == pytest.approx(
+        80.0 * 1.25 / 101.0 - 1
+    )
+
+
+def test_a_spin_off_dated_a_day_early_is_moved_to_the_day_the_price_drops() -> None:
+    # LSEG dates many US spin-offs on the distribution date, the trading day before the ex-date
+    close = pd.DataFrame({3: [100.0, 101.0, 100.0, 80.0, 81.0]}, index=SPIN_DAYS)
+    placed = spinoff_days(_spin("2014-09-30", 1.25), close)
+    assert placed["ex_date"].tolist() == [pd.Timestamp("2014-10-01")]
+    r = total_returns(close, _spin("2014-09-30", 1.25))[3]
+    assert r.loc["2014-09-30"] == pytest.approx(100.0 / 101.0 - 1)
+    assert r.loc["2014-10-01"] == pytest.approx(80.0 * 1.25 / 100.0 - 1)
+
+
+def test_a_spin_off_the_price_does_not_confirm_is_left_out() -> None:
+    # HSBC's rights issue of 2009: LSEG's date six trading days before the price fell - no candidate day matches
+    close = pd.DataFrame({3: [100.0, 101.0, 104.0, 103.0, 105.0]}, index=SPIN_DAYS)
+    assert spinoff_days(_spin("2014-09-29", 1.25), close).empty
+    assert total_returns(close, _spin("2014-09-29", 1.25))[3].loc["2014-09-29"] == pytest.approx(0.01)
+
+
+def test_a_consolidation_with_a_special_payout_does_not_adjust_returns() -> None:
+    # ratio < 1: a London share consolidation alongside a special dividend - the price does not rise by it
+    close = pd.DataFrame({3: [100.0, 101.0, 100.0, 99.0, 98.0]}, index=SPIN_DAYS)
+    assert spinoff_days(_spin("2014-09-30", 0.875), close).empty
+    assert total_returns(close, _spin("2014-09-30", 0.875))[3].loc["2014-09-30"] == pytest.approx(100.0 / 101.0 - 1)
+
+
+def test_a_spin_off_before_the_panel_changes_no_return() -> None:
+    close = pd.DataFrame({3: [100.0, 101.0, 80.0, 81.0, 82.0]}, index=SPIN_DAYS)
+    plain = total_returns(close, _spin("2014-09-30", 1.25).iloc[:0])[3]
+    before = total_returns(close, _spin("2010-01-04", 1.25))[3]
+    pd.testing.assert_series_equal(plain, before)
+
+
+def test_share_counts_ignore_spin_offs() -> None:
+    counts = pd.DataFrame({"listing_id": [3], "as_of_date": pd.to_datetime(["2014-09-26"]), "shares": [1000.0]})
+    got = latest_counts(counts, _spin("2014-09-30", 1.25), pd.DatetimeIndex(["2014-10-02"]), pd.Index([3]))
+    assert got.loc["2014-10-02", 3] == 1000.0
 
 
 def test_membership_end_dates_are_exclusive() -> None:
@@ -267,6 +331,26 @@ def test_a_benchmark_takes_the_actions_of_the_vendor_that_prices_it() -> None:
     kept = price_actions(actions, bars, ("refinitiv",), pd.Series([9]))
     assert "vendor" not in kept.columns
     assert kept.set_index("listing_id")["amount"].to_dict() == {7: 1.0, 9: 0.5}  # 9 is priced by Yahoo
+
+
+def test_a_correction_counts_unless_the_vendor_has_the_event_itself() -> None:
+    actions = pd.DataFrame(
+        {
+            "listing_id": [7, 8, 8],
+            "vendor": ["repository", "repository", "refinitiv"],
+            "action_type": ["spinoff", "split", "split"],
+            "ex_date": pd.to_datetime(["2014-04-03", "2005-10-17", "2005-10-18"]),
+            "amount": [np.nan] * 3,
+            "ratio": [1.997, 2.0, 2.0],
+        }
+    )
+    bars = pd.DataFrame({"listing_id": [7, 8], "vendor": ["refinitiv", "refinitiv"]})
+    kept = price_actions(actions, bars, ("refinitiv",), pd.Series(dtype=int))
+    # 7: no vendor has Alphabet's class C, so the correction stands; 8: LSEG records the split a day later - once only
+    assert sorted(zip(kept["listing_id"], kept["ex_date"].dt.date.astype(str), strict=True)) == [
+        (7, "2014-04-03"),
+        (8, "2005-10-18"),
+    ]
 
 
 def test_free_cash_flow_and_accruals_come_from_the_cash_flow_statement() -> None:

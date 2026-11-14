@@ -12,7 +12,7 @@ and ``zscore_earnings_revisions_4_mth_composite`` (8661-8928), as reconstructed 
 * **Gates**: a factor is missing where fewer than two estimates stand behind it (production's ``n < 2``; a missing
   count keeps the value, as Spark's null comparison does).
 * **Growth** from one figure to another follows production's sign rules
-  (:func:`~equity_research.research.gems_math.growth_piecewise`; the two-year FY1 to FY3 rate is compounded).
+  (:func:`~equity_research.research.qgarp_math.growth_piecewise`; the two-year FY1 to FY3 rate is compounded).
 * **Revision breadth** is half FY1's and half FY2's (raised - lowered) / estimates; over 4 months its months are
   weighted 0.4 / 0.3 / 0.2 / 0.1, and its persistence counts the signs of the last six months.
 
@@ -26,6 +26,12 @@ What is ours, not production's:
 * **Prices.** A per-share yield divides by the listing's close on the date; a total (revenue, EBIT) by the
   company's market value - production's ``currency_units`` scaling is not needed (LSEG answers in units).
 * **Not built**: ``sales_revisions_1_mth`` - only EPS revision counts are loaded.
+* **Consensus revisions** (:func:`consensus_revision_factors`, not in the library): the revision of the consensus
+  itself, for backtests. LSEG serves past revision *counts* only for companies still listed - a company since
+  delisted or acquired answers 0 raised and 0 lowered (probed 2026-11-13) - so a backtest's breadth scores the
+  survivors alone. The consensus history covers the departed too; its month-on-month change, for the same fiscal
+  year, over the price, is the classic measure of earnings revisions (Chan, Jegadeesh and Lakonishok, 1996). It
+  stands in for breadth in a backtest only: a screen of today's companies, all listed, has their real counts.
 """
 
 from __future__ import annotations
@@ -36,8 +42,8 @@ import numpy as np
 import pandas as pd
 
 from equity_research.research.cache import ResearchCache
-from equity_research.research.gems_math import div, growth_piecewise, rows_on
 from equity_research.research.panels import split_factor
+from equity_research.research.qgarp_math import div, growth_piecewise, rows_on
 from equity_research.research.reads import id_list
 
 PER_SHARE = frozenset({"eps", "dps", "cfps"})
@@ -84,6 +90,8 @@ REVENUE_FACTORS = [
 ]
 OTHER_FACTORS = ["dividend_yield_ntm", "eps_ntm_1mth_chg", "eps_ntm_3mth_chg"]
 ESTIMATE_FACTORS = EPS_FACTORS + EBIT_FACTORS + REVENUE_FACTORS + OTHER_FACTORS
+#: Ours, not the library's (see the module docstring): breadth's survivorship-free stand-in, for backtests.
+CONSENSUS_REVISION_FACTORS = ["consensus_revisions_1_mth", "consensus_revisions_4_mth"]
 REVISIONS_COMPOSITE = "zscore_earnings_revisions_4_mth_composite"
 
 
@@ -321,6 +329,28 @@ class Estimates:
         span = e1 - e0
         return div(e1 - now, span) * a0 + div(now - e0, span) * m1
 
+    def consensus_revision(self, period: str, months_back: int) -> pd.DataFrame:
+        """How much ``period``'s EPS consensus moved in the month ending ``months_back`` months before the date.
+
+        The mean at that month end less the mean a month earlier *for the same fiscal year* (a year that was FY2 then
+        is found under FY2), both in the shares of the date - so neither a new fiscal year nor a split is a revision.
+        """
+        end = self.get("eps", period, "fiscal_period_end", months_back)
+        before = pd.DataFrame(np.nan, index=end.index, columns=end.columns)
+        for then_period in ("FY1", "FY2", "FY3"):
+            mean = self.get("eps", then_period, "mean", months_back + 1)
+            then_end = self.get("eps", then_period, "fiscal_period_end", months_back + 1)
+            before = before.where(before.notna(), mean.where(then_end == end))
+        return self.get("eps", period, "mean", months_back) - before
+
+    def consensus_breadth(self, months_back: int) -> pd.DataFrame:
+        """Half FY1's and half FY2's consensus revision over the date's price - breadth's stand-in, from consensus."""
+        price = self.inputs.close
+        return (
+            div(self.consensus_revision("FY1", months_back), price)
+            + div(self.consensus_revision("FY2", months_back), price)
+        ) * 0.5
+
     def breadth(self, months_back: int) -> pd.DataFrame:
         """Half FY1's and half FY2's (raised - lowered) / estimates, at the month end ``months_back`` before."""
         parts = []
@@ -414,6 +444,22 @@ def other_factors(e: Estimates) -> dict[str, pd.DataFrame]:
         "dividend_yield_ntm": gate(div(e.ntm("dps"), e.inputs.close), n_dps),
         "eps_ntm_1mth_chg": gate(div(now - month, month.abs()), n_eps),
         "eps_ntm_3mth_chg": gate(div(now - quarter, quarter.abs()), n_eps),
+    }
+
+
+def consensus_revision_factors(inputs: EstimateInputs) -> dict[str, pd.DataFrame]:
+    """:data:`CONSENSUS_REVISION_FACTORS`: the 1- and 4-month consensus revisions, gated as breadth is.
+
+    The 4-month figure weighs its months 0.4 / 0.3 / 0.2 / 0.1, as production's ``earnings_revisions_4_mth`` does.
+    Not clipped: a revision over the price has no natural bound, and the z-scores QGARP reads are clipped at +/-3.
+    """
+    e = Estimates(inputs)
+    n1, n2 = e.get("eps", "FY1", "estimates"), e.get("eps", "FY2", "estimates")
+    b = [e.consensus_breadth(k) for k in range(4)]
+    four = b[0] * 0.4 + b[1] * 0.3 + b[2] * 0.2 + b[3] * 0.1
+    return {
+        "consensus_revisions_1_mth": gate2(b[0], n1, n2),
+        "consensus_revisions_4_mth": gate2(four, n1, n2),
     }
 
 

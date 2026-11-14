@@ -109,13 +109,20 @@ def growth(
     return fig
 
 
-def lines(series: Mapping[str, pd.Series], title: str, *, subtitle: str | None = None, percent: bool = False) -> Figure:
-    """One or more series over time on one axis (a single series needs no legend)."""
+def lines(
+    series: Mapping[str, pd.Series],
+    title: str,
+    *,
+    subtitle: str | None = None,
+    percent: bool = False,
+    decimals: int = 0,
+) -> Figure:
+    """One or more series over time on one axis (a single series needs no legend); ``decimals`` on a percent axis."""
     fig, ax = _figure(title, subtitle)
     for i, (name, s) in enumerate(series.items()):
         ax.plot(s.index, s.to_numpy(), color=SERIES[i % len(SERIES)], label=name)
     if percent:
-        ax.yaxis.set_major_formatter(PercentFormatter(1.0, decimals=0))
+        ax.yaxis.set_major_formatter(PercentFormatter(1.0, decimals=decimals))
     if len(series) > 1:
         ax.legend(loc="best")
     fig.tight_layout()

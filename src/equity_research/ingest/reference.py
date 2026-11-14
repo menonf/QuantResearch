@@ -55,6 +55,12 @@ class UniverseSpec:
     country: str = "US"
 
 
+#: A trade's cost, one way, in basis points of the trade: an all-in assumption by segment (no vendor measures it) for
+#: the broker's commission, half the quoted spread and the price our own order moves - the wider the smaller the
+#: company. The commission is the small part: Interactive Brokers' fixed schedule (IBKR Pro, read 2026-11-12) is
+#: $0.005 a share in New York (at least $1 an order) - about 0.5, 0.75 and 1.5 basis points at the segments' median
+#: share prices of 2024 ($120, $67, $33) - and 0.05 % of the trade in London (5 basis points, at least GBP 3 an
+#: order), for orders of $10,000 / GBP 6,000 or more. These costs cover it (the owner's decision of 2026-11-12).
 LARGE = Component("SP500", "large", 10.0, 25.0, 0)
 MID = Component("SP400", "mid", 25.0, 50.0, 1)
 SMALL = Component("SP600", "small", 50.0, 100.0, 2)

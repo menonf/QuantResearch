@@ -800,10 +800,16 @@ class LsegLoad:
         return sorted(r for r in self.listing_ids() if not rics.is_index(r))
 
     def actions(self, since: dt.date | None = None, report: StepReport | None = None) -> StepReport:
-        """Dividends; splits confirmed by the price (or the share count) and spin-offs."""
+        """Dividends; splits confirmed by the price (or the share count) and spin-offs.
+
+        From the first price on (:data:`HISTORY_DAYS` before the start), not the start: a split or dividend in the
+        prices' first year would otherwise be missing from the returns and momentum the start's research reads (until
+        2026-11-14 they began at the start, and ten S&P 500 splits of January 2005 were booked as halvings).
+        """
         report = report or StepReport()  # the caller's, so work done before a stop is still reported
         ids = self.listing_ids()
-        window = {"SDate": (since or pd.Timestamp(self.start).date()).isoformat(), "EDate": self.end}
+        first = since or (pd.Timestamp(self.start) - pd.Timedelta(days=HISTORY_DAYS)).date()
+        window = {"SDate": first.isoformat(), "EDate": self.end}
         unverified = by_count = 0
         for chunk in buckets(self.equities(), self.bucket_count("actions")):
             batch_id, raw = self.fetch("dividends", chunk, list(self.market.dividend_fields), window, report)

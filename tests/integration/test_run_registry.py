@@ -1,11 +1,14 @@
 """The research-run registry on a scratch database: what counts as another trial."""
 
+import json
 from pathlib import Path
 
 import pytest
+import sqlalchemy as sa
 from conftest import scratch_database
 
-from equity_research.research.registry import record_run, trial_count, trials_with
+from equity_research.db import schema
+from equity_research.research.registry import record_run, record_search, trial_count, trials_with
 from equity_research.research.runs import score_metrics
 
 pytestmark = pytest.mark.integration
@@ -34,3 +37,18 @@ def test_score_metrics_shows_each_scores_newest_run(tmp_path: Path) -> None:
         assert sorted(table.index) == ["knn", "svr"]
         assert table.loc["knn", "run_id"] == newest and table.loc["knn", "cagr"] == 0.15
         assert score_metrics(engine, "no such study").empty
+
+
+def test_a_search_is_registered_whole(tmp_path: Path) -> None:
+    with scratch_database("equity_research_test_registry", tmp_path) as engine:
+        points = [({"depth": d}, {"mean_ic": 0.01 * d}) for d in (2, 4, 6)]
+        ids = record_search(engine, "ml4t_test", points, search="depth grid")
+        assert len(ids) == 3 and trial_count(engine, "ml4t_test") == 3  # every setting tried counts, not the winner
+        record_search(engine, "ml4t_test", points, search="depth grid")  # the search run again
+        assert trial_count(engine, "ml4t_test") == 3
+        r = schema.research_run
+        with engine.connect() as conn:
+            stored = conn.execute(sa.select(r.c.config_json, r.c.holdout_opened).where(r.c.run_id == ids[0])).one()
+        assert json.loads(stored.config_json)["stage"] == "training" and not stored.holdout_opened
+        with pytest.raises(ValueError, match="stage"):
+            record_search(engine, "ml4t_test", points, stage="tuning")

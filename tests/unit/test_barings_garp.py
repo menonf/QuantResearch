@@ -3,8 +3,8 @@ import pandas as pd
 import pytest
 
 from equity_research.research import barings_garp as bg
-from equity_research.research.barings_estimates import ESTIMATE_FACTORS
-from equity_research.research.gems_math import growth_piecewise
+from equity_research.research.barings_estimates import CONSENSUS_REVISION_FACTORS, ESTIMATE_FACTORS
+from equity_research.research.qgarp_math import growth_piecewise
 
 DAY = pd.Timestamp("2015-06-30")
 DATES = pd.DatetimeIndex([DAY])
@@ -63,7 +63,7 @@ def test_price_returns_need_a_recent_price() -> None:
     assert out["12_mth_price_return_local"][2].isna().all() and out["price_return_stability"][2].isna().all()
 
 
-def _inputs(accounts: dict[str, list[float]], *, shares: list[float], value: float) -> bg.GemsInputs:
+def _inputs(accounts: dict[str, list[float]], *, shares: list[float], value: float) -> bg.QgarpInputs:
     """One company on one date: ``accounts[item][k]`` known ``k`` years before (and its period end)."""
     snaps = []
     for k in range(bg.SNAPSHOTS):
@@ -72,7 +72,7 @@ def _inputs(accounts: dict[str, list[float]], *, shares: list[float], value: flo
         end = (DAY - pd.DateOffset(years=k) - pd.Timestamp(0)).days - 90
         snap |= {f"period_end:{name}": _frame([float(end)]) for name in names}
         snaps.append(snap)
-    return bg.GemsInputs(
+    return bg.QgarpInputs(
         dates=DATES,
         accounts=snaps,
         shares=[_frame([s]) for s in shares],
@@ -230,5 +230,89 @@ def test_shareholder_yield_banks_and_unusual_items_follow_production() -> None:
     assert f["extraordinary_charge_to_operating_income"].loc[DAY, 1] == 0.0
     assert f["loans_to_deposits"].loc[DAY, 1] == pytest.approx(-0.625)  # as coded: negated
     bank = _inputs(flows, shares=[1.0] * 6, value=1000.0)
-    bank = bg.GemsInputs(**{**bank.__dict__, "industry": pd.DataFrame({1: ["BANK"]}, index=DATES)})
+    bank = bg.QgarpInputs(**{**bank.__dict__, "industry": pd.DataFrame({1: ["BANK"]}, index=DATES)})
     assert bg.account_factors(bank)["shareholder_yield_growth_hist"].loc[DAY, 1] == pytest.approx(0.05 - 0.02)
+
+
+def test_productions_rule_set_gives_every_factor_its_two_limits() -> None:
+    rules = bg.packaged_rules("gems-2026-11")
+    assert rules is not None and list(rules.columns) == bg.RULE_COLUMNS
+    assert len(rules) == rules["barings_metric_name"].nunique() == 117
+    assert rules[["lower_limit", "upper_limit"]].notna().all().all()
+    assert (rules["lower_limit"] <= rules["upper_limit"]).all()
+    assert rules["exclude_financials"].isna().all()  # this export has limits only
+    by_name = rules.set_index("barings_metric_name")
+    assert list(by_name.loc["earnings_yield", ["lower_limit", "upper_limit"]]) == [-0.5, 0.5]
+    assert list(by_name.loc["dividend_yield", ["lower_limit", "upper_limit"]]) == [0.0, 0.2]
+    assert list(by_name.loc["capex_to_depreciation", ["lower_limit", "upper_limit"]]) == [0.0, 500.0]
+    # 100 of the factors we build have limits; the rest (bank ratios, five-year volatilities...) are kept whole
+    assert len(set(by_name.index) & set(bg.BUILT)) == 100
+    assert bg.packaged_rules(None) is None
+    with pytest.raises(ValueError, match="no rule set"):
+        bg.packaged_rules("gems-1999")
+
+
+def test_productions_limits_remove_only_what_lies_outside_them() -> None:
+    table = _table(
+        5,
+        earnings_yield=[0.05, 0.5, 0.51, -0.6, np.nan],  # limits -0.5 to 0.5, inclusive
+        dividend_yield=[0.0, 0.03, 0.25, -0.01, 0.2],  # 0 to 0.2
+        market_capitalization=[1e3, 1e6, 1e9, 1e12, 5.0],  # no rule: kept whole
+    )
+    rules = bg.packaged_rules("gems-2026-11")
+    out = bg.clean(table, rules)
+    assert out["earnings_yield"].isna().tolist() == [False, False, True, True, True]
+    assert out["dividend_yield"].isna().tolist() == [False, False, True, True, False]
+    assert out["market_capitalization"].tolist() == table["market_capitalization"].tolist()
+
+    removed = bg.removed_by_rules(table, rules)
+    assert set(removed.index) == {"earnings_yield", "dividend_yield"}  # only factors with a rule
+    assert list(removed.loc["earnings_yield"]) == [4, 1, 1, 0, 0.5]  # values, below, above, financials, share
+    assert list(removed.loc["dividend_yield"]) == [5, 1, 1, 0, 0.4]
+    assert bg.removed_by_rules(table, None).empty
+
+
+def test_a_run_names_its_rule_set_and_a_run_without_one_keeps_its_old_registry_hash() -> None:
+    plain = bg.registered_settings(bg.BaringsGarpConfig())
+    assert "rules" not in plain  # as stored before the setting existed: repeating that run is no new trial
+    assert "benchmark" not in plain
+    assert bg.registered_settings(bg.BaringsGarpConfig(benchmark="SPY"))["benchmark"] == "SPY"
+    with_rules = bg.registered_settings(bg.BaringsGarpConfig(rules="gems-2026-11"))
+    assert with_rules["rules"] == "gems-2026-11" and {k: v for k, v in with_rules.items() if k != "rules"} == plain
+    with pytest.raises(ValueError, match="no rule set"):
+        bg.BaringsGarpConfig(rules="unknown")
+
+
+def test_the_consensus_revisions_stand_in_for_the_revisions_and_are_ranked_as_they_are() -> None:
+    table = _table(
+        4, consensus_revisions_1_mth=[0.03, 0.01, -0.01, np.nan], earnings_revisions_1_mth=[0.5, 0.2, -0.1, 0.0]
+    )
+    comp = bg.composites(table, weights={bg.CONSENSUS_REVISIONS_1_MTH: 1.0})
+    z = comp[bg.CONSENSUS_REVISIONS_1_MTH]
+    assert z.iloc[0] > z.iloc[1] > z.iloc[2] and np.isnan(z.iloc[3])
+    # as production ranks its revisions, ascending: the lowest revision ranks best, a missing one in the middle
+    assert comp["pct_rank_qgarp"].tolist()[2] < comp["pct_rank_qgarp"].tolist()[0]
+    fixed = bg.composites(table, weights={bg.CONSENSUS_REVISIONS_1_MTH: 1.0}, fix_revisions_direction=True)
+    assert fixed["pct_rank_qgarp"].tolist()[0] < fixed["pct_rank_qgarp"].tolist()[2]
+    assert bg.CONSENSUS_REVISIONS_1_MTH in bg.QGARP_INPUTS
+    assert bg.CONSENSUS_REVISIONS_1_MTH not in dict(bg.QGARP_WEIGHTS)  # never production's
+
+
+def test_factor_panels_are_one_date_by_listing_panel_per_factor() -> None:
+    table = _table(3, earnings_yield=[0.05, 0.10, np.nan], pct_rank_qgarp=[1.0, 50.0, 100.0], beta=[np.nan] * 3)
+    panels = bg.factor_panels(table, ["earnings_yield", "pct_rank_qgarp", "beta", "not_a_column"])
+    assert set(panels) == {"earnings_yield", "pct_rank_qgarp"}  # no values or no column: left out
+    assert list(panels["earnings_yield"].iloc[0])[:2] == [0.05, 0.10]
+    assert list(panels["pct_rank_qgarp"].iloc[0]) == [-1.0, -50.0, -100.0]  # a composite: higher is better
+
+
+def test_every_factor_and_composite_names_its_kind_of_calculation() -> None:
+    """The triage table's ``calculation`` column: every score tested has a kind, every kind is explained."""
+    scores = [*bg.BUILT, *bg.COMPOSITES, bg.CONSENSUS_REVISIONS_1_MTH, bg.REVISIONS_1_MTH, *CONSENSUS_REVISION_FACTORS]
+    assert [n for n in scores if not bg.calculation(n)] == []
+    assert set(bg.CALCULATIONS.values()) == set(bg.CALCULATION_KINDS)
+    assert bg.calculation("regression_momentum_1_year") == "regression t-statistic"
+    assert bg.calculation("return_on_equity_5_year_vol") == "standard deviation"
+    assert bg.calculation("zscore_momentum_composite") == "z-score"
+    assert bg.calculation("dividend_growth_hist") == "growth rate"
+    assert bg.calculation("not_a_factor") == ""

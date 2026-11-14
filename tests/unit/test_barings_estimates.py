@@ -135,3 +135,48 @@ def test_the_revisions_composite_needs_six_months_of_estimates() -> None:
     members = pd.DataFrame({1: [True], 2: [True]}, index=DATES)
     out = be.revisions_composite(_inputs(_consensus(rows)), members)
     assert np.isnan(out.to_numpy(dtype=float)[0, 0])
+
+
+def test_a_consensus_revision_is_the_same_fiscal_years_move_over_the_price() -> None:
+    rows = [
+        # listing 2, price 20: FY1 2.00 -> 2.20 in June, FY2 3.00 -> 2.80
+        (2, "eps", "FY1", "2015-05-31", "2015-12-31", 2.0, 0.1, 5),
+        (2, "eps", "FY2", "2015-05-31", "2016-12-31", 3.0, 0.1, 5),
+        (2, "eps", "FY1", "2015-06-30", "2015-12-31", 2.2, 0.1, 5),
+        (2, "eps", "FY2", "2015-06-30", "2016-12-31", 2.8, 0.1, 5),
+    ]
+    e = be.Estimates(_inputs(_consensus(rows)))
+    assert e.consensus_revision("FY1", 0).loc[DAY, 2] == pytest.approx(0.2)
+    assert e.consensus_revision("FY2", 0).loc[DAY, 2] == pytest.approx(-0.2)
+    assert e.consensus_breadth(0).loc[DAY, 2] == pytest.approx(0.5 * 0.2 / 20 + 0.5 * -0.2 / 20)
+
+
+def test_a_new_fiscal_year_or_a_split_is_not_a_revision() -> None:
+    rows = [
+        # listing 2 rolls its fiscal year at the end of May: June's FY1 was May's FY2 (2.5), and moved to 2.6
+        (2, "eps", "FY1", "2015-05-31", "2015-05-31", 1.0, 0.1, 5),
+        (2, "eps", "FY2", "2015-05-31", "2016-05-31", 2.5, 0.1, 5),
+        (2, "eps", "FY1", "2015-06-30", "2016-05-31", 2.6, 0.1, 5),
+        # listing 1 split 2-for-1 in June: May's 4.0 is 2.0 in June's shares, so 2.0 -> 2.0 is no revision
+        (1, "eps", "FY1", "2015-05-31", "2015-12-31", 4.0, 0.2, 5),
+        (1, "eps", "FY1", "2015-06-30", "2015-12-31", 2.0, 0.1, 5),
+    ]
+    e = be.Estimates(_inputs(_consensus(rows)))
+    assert e.consensus_revision("FY1", 0).loc[DAY, 2] == pytest.approx(0.1)  # 2.6 - 2.5, not 2.6 - 1.0
+    assert e.consensus_revision("FY1", 0).loc[DAY, 1] == pytest.approx(0.0)
+
+
+def test_consensus_revisions_need_two_estimates_and_weigh_four_months() -> None:
+    months = ["2015-02-28", "2015-03-31", "2015-04-30", "2015-05-31", "2015-06-30"]
+    fy1 = [1.0, 1.1, 1.1, 1.3, 1.4]  # June +0.1, May +0.2, April 0, March +0.1
+    rows: list[Row] = []
+    for m, v in zip(months, fy1, strict=True):
+        rows += [(2, "eps", "FY1", m, "2015-12-31", v, 0.1, 5), (2, "eps", "FY2", m, "2016-12-31", 3.0, 0.1, 5)]
+        rows += [(1, "eps", "FY1", m, "2015-12-31", 2.0, 0.1, 1), (1, "eps", "FY2", m, "2016-12-31", 3.0, 0.1, 1)]
+    f = be.consensus_revision_factors(_inputs(_consensus(rows)))
+    assert set(f) == set(be.CONSENSUS_REVISION_FACTORS)
+    one = 0.5 * 0.1 / 20  # FY2 unchanged: half the FY1 move over the price of 20
+    assert f["consensus_revisions_1_mth"].loc[DAY, 2] == pytest.approx(one)
+    four = 0.5 * (0.4 * 0.1 + 0.3 * 0.2 + 0.2 * 0.0 + 0.1 * 0.1) / 20
+    assert f["consensus_revisions_4_mth"].loc[DAY, 2] == pytest.approx(four)
+    assert f["consensus_revisions_1_mth"][1].isna().all()  # one estimate behind it: no value

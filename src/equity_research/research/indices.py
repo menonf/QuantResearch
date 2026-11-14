@@ -21,6 +21,7 @@ equal-weighted one does: a company count includes shares that never trade, and s
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -35,6 +36,7 @@ from equity_research.research.data import (
     in_major_units,
     operating_companies,
     universe_currency,
+    with_corrections,
 )
 from equity_research.research.data import memberships as preferred_memberships
 from equity_research.research.panels import (
@@ -187,9 +189,10 @@ def load_index_data(
     # London's pence beside dividends in pounds; a line once quoted in dollars or euros at the day's rate
     bars = in_currency(bars, rates, currency).drop(columns="currency")
     actions = cache.query(
-        f"SELECT listing_id, action_type, ex_date, amount, ratio, currency FROM market.corporate_action "
-        f"WHERE listing_id IN ({ids}) AND vendor IN ({in_vendors})"
+        f"SELECT listing_id, vendor, action_type, ex_date, amount, ratio, currency FROM market.corporate_action "
+        f"WHERE listing_id IN ({ids})"
     )
+    actions = with_corrections(actions, vendors).drop(columns="vendor").reset_index(drop=True)
     # dividends declared abroad (Anglo American's dollars on its London line), in the index's currency
     actions = dividends_in(actions, rates, currency)
     close = close_panel(bars)
@@ -338,6 +341,40 @@ def tracking(ours: pd.Series, theirs: pd.Series) -> dict[str, float]:
         "correlation": float(both["ours"].corr(both["theirs"])),
         "beta": float(both["ours"].cov(both["theirs"]) / both["theirs"].var()),
     }
+
+
+#: How the notebooks show a :func:`tracking_summary` (``Styler.format``).
+TRACKING_FORMAT = {
+    "days": "{:,}",
+    "ours_per_year": "{:.2%}",
+    "theirs_per_year": "{:.2%}",
+    "tracking_error": "{:.2%}",
+    "correlation": "{:.4f}",
+    "beta": "{:.3f}",
+}
+
+
+def tracking_summary(pairs: Mapping[str, tuple[pd.Series, pd.Series]]) -> pd.DataFrame:
+    """One row of :func:`tracking` per comparison: ``{name: (ours, theirs)}``, days as whole numbers."""
+    summary = pd.DataFrame({name: tracking(ours, theirs) for name, (ours, theirs) in pairs.items()}).T
+    return summary.astype({"days": int})
+
+
+def yearly_tracking_error(ours: pd.Series, theirs: pd.Series) -> pd.Series:
+    """The tracking error within each calendar year (annualised): *when* a reconstruction drifts.
+
+    A data problem - a missed split, an incomplete list of joiners and leavers - is usually confined to a period,
+    which the whole-period figure hides.
+    """
+    both = pd.concat({"ours": ours, "theirs": theirs}, axis=1, sort=True).dropna()
+    diff = both["ours"] - both["theirs"]
+    by_year: pd.Series = diff.groupby(pd.DatetimeIndex(diff.index).year).std()
+    return by_year * float(np.sqrt(TRADING_DAYS_PER_YEAR))
+
+
+def yearly_tracking_errors(pairs: Mapping[str, tuple[pd.Series, pd.Series]]) -> pd.DataFrame:
+    """``year x comparison``: :func:`yearly_tracking_error` of each pair."""
+    return pd.DataFrame({name: yearly_tracking_error(ours, theirs) for name, (ours, theirs) in pairs.items()})
 
 
 def calendar_years(returns: dict[str, pd.Series]) -> pd.DataFrame:
