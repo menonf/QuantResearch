@@ -23,10 +23,11 @@ import pycountry
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from equity_research.db.schema import VENDORS
+from equity_research.preferences import vendor_preferences
 from equity_research.quality.checks import _MEMBER_DAYS_CTE, PROVENANCED
-from equity_research.raw.store import sha256_file
-from equity_research.settings import get_settings, vendor_preferences
+from research_core.data.db.schema import VENDORS
+from research_core.data.raw_store import sha256_file
+from research_core.settings import get_settings
 
 #: years whose member-days must be this fully priced (an index member without a price drops out of a backtest)
 YEAR_COVERAGE = 0.995
@@ -91,7 +92,7 @@ def audit(engine: Engine, *, raw_dir: Path | None = None, sample: int = CHECKSUM
 
 
 def _schema(a: _Audit) -> None:
-    from equity_research.db.migrate import head_revision  # noqa: PLC0415 - alembic is slow to import
+    from research_core.data.db.migrate import head_revision  # noqa: PLC0415 - alembic is slow to import
 
     a.rule(
         "schema",
@@ -100,9 +101,9 @@ def _schema(a: _Audit) -> None:
     )
     a.rule(
         "schema",
-        "ref.vendor holds the fixed vendor ids",
+        "core.vendor holds the fixed vendor ids",
         lambda: (
-            got := {c: v for v, c in a.q("SELECT vendor_id, vendor_code FROM ref.vendor")},
+            got := {c: v for v, c in a.q("SELECT vendor_id, vendor_code FROM core.vendor")},
             got == {c: v[0] for c, v in VENDORS.items()},
             "",
         ),
@@ -113,34 +114,34 @@ def _identity(a: _Audit) -> None:
     a.none(
         "identity",
         "every equity listing has a company",
-        "SELECT COUNT(*) FROM ref.listing WHERE instrument_type = 'equity' AND issuer_id IS NULL",
+        "SELECT COUNT(*) FROM core.listing WHERE instrument_type = 'equity' AND issuer_id IS NULL",
     )
     a.none(
         "identity",
         "index levels have no company",
-        "SELECT COUNT(*) FROM ref.listing WHERE instrument_type = 'index' AND issuer_id IS NOT NULL",
+        "SELECT COUNT(*) FROM core.listing WHERE instrument_type = 'index' AND issuer_id IS NOT NULL",
     )
     a.none(
         "identity",
         "every listing has an identifier",
-        "SELECT COUNT(*) FROM ref.listing l WHERE NOT EXISTS (SELECT 1 FROM ref.identifier i "
+        "SELECT COUNT(*) FROM core.listing l WHERE NOT EXISTS (SELECT 1 FROM core.identifier i "
         "WHERE i.entity_type = 'listing' AND i.entity_id = l.listing_id)",
     )
     a.none(
         "identity",
         "identifiers point at an existing listing or company",
-        "SELECT COUNT(*) FROM ref.identifier i WHERE (i.entity_type = 'listing' AND NOT EXISTS "
-        "(SELECT 1 FROM ref.listing l WHERE l.listing_id = i.entity_id)) OR (i.entity_type = 'issuer' AND NOT EXISTS "
-        "(SELECT 1 FROM ref.issuer s WHERE s.issuer_id = i.entity_id))",
+        "SELECT COUNT(*) FROM core.identifier i WHERE (i.entity_type = 'listing' AND NOT EXISTS "
+        "(SELECT 1 FROM core.listing l WHERE l.listing_id = i.entity_id)) OR (i.entity_type = 'issuer' AND NOT EXISTS "
+        "(SELECT 1 FROM core.issuer s WHERE s.issuer_id = i.entity_id))",
     )
     a.none(
         "identity",
         "an identifier's validity ends after it starts",
-        "SELECT COUNT(*) FROM ref.identifier WHERE valid_to IS NOT NULL AND valid_to <= valid_from",
+        "SELECT COUNT(*) FROM core.identifier WHERE valid_to IS NOT NULL AND valid_to <= valid_from",
     )
     overlaps = dict(
         a.q(
-            """SELECT x.id_type, COUNT(*) FROM ref.identifier x JOIN ref.identifier y
+            """SELECT x.id_type, COUNT(*) FROM core.identifier x JOIN core.identifier y
                  ON x.id_type = y.id_type AND x.value = y.value AND x.entity_type = y.entity_type
                 AND x.entity_id < y.entity_id
                 AND x.valid_from < COALESCE(y.valid_to, '9999-12-31') AND y.valid_from < COALESCE(x.valid_to,
@@ -154,13 +155,13 @@ def _identity(a: _Audit) -> None:
     a.none(
         "identity",
         "every company has a listing",
-        "SELECT COUNT(*) FROM ref.issuer s WHERE NOT EXISTS (SELECT 1 FROM ref.listing l WHERE l.issuer_id = "
+        "SELECT COUNT(*) FROM core.issuer s WHERE NOT EXISTS (SELECT 1 FROM core.listing l WHERE l.issuer_id = "
         "s.issuer_id)",
     )
     a.none(
         "identity",
         "one listing per share line (an ISIN open on one listing only)",
-        "SELECT COUNT(*) FROM (SELECT value FROM ref.identifier WHERE id_type = 'ISIN' AND entity_type = 'listing' "
+        "SELECT COUNT(*) FROM (SELECT value FROM core.identifier WHERE id_type = 'ISIN' AND entity_type = 'listing' "
         "AND valid_to IS NULL GROUP BY value HAVING COUNT(DISTINCT entity_id) > 1) x",
     )
     codes = {c.alpha_2 for c in pycountry.countries}
@@ -168,7 +169,7 @@ def _identity(a: _Audit) -> None:
     def homes() -> tuple[object, bool, str]:
         bad = [
             d
-            for (d,) in a.q("SELECT domicile_country FROM ref.issuer WHERE domicile_country IS NOT NULL")
+            for (d,) in a.q("SELECT domicile_country FROM core.issuer WHERE domicile_country IS NOT NULL")
             if d not in codes
         ]
         return len(bad), not bad, str(sorted(set(bad))[:5]) if bad else ""
@@ -177,7 +178,7 @@ def _identity(a: _Audit) -> None:
     a.none(
         "identity",
         "one open classification per company, vendor and scheme",
-        "SELECT COUNT(*) FROM (SELECT issuer_id FROM ref.classification WHERE valid_to IS NULL "
+        "SELECT COUNT(*) FROM (SELECT issuer_id FROM equity.classification WHERE valid_to IS NULL "
         "GROUP BY issuer_id, vendor_id, scheme HAVING COUNT(*) > 1) x",
     )
 
@@ -186,46 +187,47 @@ def _membership(a: _Audit) -> None:
     a.none(
         "members",
         "a spell ends after it starts",
-        "SELECT COUNT(*) FROM ref.index_membership WHERE end_date IS NOT NULL AND end_date <= start_date",
+        "SELECT COUNT(*) FROM equity.index_membership WHERE end_date IS NOT NULL AND end_date <= start_date",
     )
     a.none(
         "members",
         "no overlapping spells of one listing in one index",
-        "SELECT COUNT(*) FROM ref.index_membership x JOIN ref.index_membership y ON x.index_id = y.index_id "
+        "SELECT COUNT(*) FROM equity.index_membership x JOIN equity.index_membership y ON x.index_id = y.index_id "
         "AND x.listing_id = y.listing_id AND x.vendor_id = y.vendor_id AND x.start_date < y.start_date "
         "AND COALESCE(x.end_date, '9999-12-31') > y.start_date",
     )
     a.none(
         "members",
         "members are equities (or closed-end funds: UK investment trusts)",
-        "SELECT COUNT(*) FROM ref.index_membership m JOIN ref.listing l ON l.listing_id = m.listing_id "
+        "SELECT COUNT(*) FROM equity.index_membership m JOIN core.listing l ON l.listing_id = m.listing_id "
         "WHERE l.instrument_type NOT IN ('equity', 'fund')",
     )
     a.none(
         "members",
         "no member before its first trade",
-        "SELECT COUNT(*) FROM ref.index_membership m JOIN (SELECT listing_id, MIN(trade_date) AS d "
-        "FROM market.price_bar GROUP BY listing_id) f ON f.listing_id = m.listing_id "
+        "SELECT COUNT(*) FROM equity.index_membership m JOIN (SELECT listing_id, MIN(trade_date) AS d "
+        "FROM equity.price_bar GROUP BY listing_id) f ON f.listing_id = m.listing_id "
         "WHERE m.start_date < DATEADD(day, -7, f.d)",
     )
     a.none(
         "members",
         "every index with members names the listing carrying its level",
-        "SELECT COUNT(*) FROM ref.index_definition WHERE level_listing_id IS NULL "
-        "AND index_id IN (SELECT index_id FROM ref.index_membership)",
+        "SELECT COUNT(*) FROM equity.index_definition WHERE level_listing_id IS NULL "
+        "AND index_id IN (SELECT index_id FROM equity.index_membership)",
     )
     # the FTSE SmallCap has no fixed size (everything below the 350 big enough to qualify)
     expected = {"SP500": 500, "SP400": 400, "SP600": 600, "FTSE100": 100, "FTSE250": 250}
 
     def sizes() -> tuple[object, bool, str]:
         rows = a.q(
-            """WITH d AS (SELECT DATEFROMPARTS(y, 6, 30) AS day FROM (VALUES (2005),(2007),(2009),(2011),(2013),(2015),
-                      (2017),(2019),(2021),(2023),(2025)) v(y))
-               SELECT x.code, d.day, COUNT(m.listing_id) FROM d CROSS JOIN ref.index_definition x
-               LEFT JOIN ref.index_membership m ON m.index_id = x.index_id AND m.start_date <= d.day
+            """WITH d AS (SELECT DATEFROMPARTS(y, 6, 30) AS day FROM (VALUES (2001),(2003),(2005),(2007),(2009),(2011),
+                      (2013),(2015),(2017),(2019),(2021),(2023),(2025)) v(y))
+               SELECT x.code, d.day, COUNT(m.listing_id) FROM d CROSS JOIN equity.index_definition x
+               LEFT JOIN equity.index_membership m ON m.index_id = x.index_id AND m.start_date <= d.day
                     AND (m.end_date IS NULL OR m.end_date > d.day)
-               WHERE d.day >= (SELECT MIN(start_date) FROM ref.index_membership)
-                 AND x.index_id IN (SELECT index_id FROM ref.index_membership)
+               -- each index from the start of its own history (LSEG's S&P 400 and 600 begin in 2001)
+               WHERE d.day >= (SELECT MIN(start_date) FROM equity.index_membership s WHERE s.index_id = x.index_id)
+                 AND x.index_id IN (SELECT index_id FROM equity.index_membership)
                GROUP BY x.code, d.day"""
         )
         off = [f"{c} {d}: {n}" for c, d, n in rows if c in expected and abs(n - expected[c]) > 0.03 * expected[c]]
@@ -240,32 +242,32 @@ def _prices(a: _Audit) -> None:
     a.none(
         "prices",
         "a close lies within its day's high and low",
-        "SELECT COUNT(*) FROM market.price_bar WHERE high < low OR [close] > high * 1.0001 OR [close] < low * 0.9999",
+        "SELECT COUNT(*) FROM equity.price_bar WHERE high < low OR [close] > high * 1.0001 OR [close] < low * 0.9999",
     )
     a.none(
         "prices",
         "no bars on a weekend",
-        "SELECT COUNT(*) FROM market.price_bar WHERE DATEPART(weekday, trade_date) IN (1, 7)",
+        "SELECT COUNT(*) FROM equity.price_bar WHERE DATEPART(weekday, trade_date) IN (1, 7)",
     )
     a.none(
         "prices",
         "no bars after a listing's last day",
-        "SELECT COUNT(*) FROM market.price_bar p JOIN ref.listing l ON l.listing_id = p.listing_id "
+        "SELECT COUNT(*) FROM equity.price_bar p JOIN core.listing l ON l.listing_id = p.listing_id "
         "WHERE l.delisted_on IS NOT NULL AND p.trade_date > l.delisted_on",
     )
     a.none(
         "prices",
         "prices in a currency research reads (dollars, pounds, pence as GBX, or one with an exchange rate)",
-        "SELECT COUNT(*) FROM market.price_bar p "
+        "SELECT COUNT(*) FROM equity.price_bar p "
         "WHERE p.currency IS NOT NULL AND p.currency NOT IN ('USD', 'GBP', 'GBX') "
-        "AND NOT EXISTS (SELECT 1 FROM ref.listing x WHERE x.instrument_type = 'fx' AND x.currency = p.currency)",
+        "AND NOT EXISTS (SELECT 1 FROM core.listing x WHERE x.instrument_type = 'fx' AND x.currency = p.currency)",
     )
     a.none(
         "prices",
         # a line can change the currency it is quoted in (IHG: pence to dollars, 2026): its latest bar is in its own;
         # an exchange rate is one unit of its currency, priced in dollars
         "a listing's latest bar in the listing's currency",
-        "SELECT COUNT(*) FROM ref.listing l CROSS APPLY (SELECT TOP 1 p.currency FROM market.price_bar p "
+        "SELECT COUNT(*) FROM core.listing l CROSS APPLY (SELECT TOP 1 p.currency FROM equity.price_bar p "
         "WHERE p.listing_id = l.listing_id ORDER BY p.trade_date DESC) b "
         "WHERE b.currency IS NOT NULL AND l.currency IS NOT NULL AND b.currency <> l.currency "
         "AND l.instrument_type <> 'fx'",
@@ -273,15 +275,15 @@ def _prices(a: _Audit) -> None:
     a.none(
         "prices",
         "a dividend declared in another currency has its exchange rate",
-        "SELECT COUNT(DISTINCT a.currency) FROM market.corporate_action a WHERE a.action_type = 'cash_dividend' "
-        "AND a.currency IS NOT NULL AND a.currency <> 'USD' AND NOT EXISTS (SELECT 1 FROM ref.listing l "
+        "SELECT COUNT(DISTINCT a.currency) FROM equity.corporate_action a WHERE a.action_type = 'cash_dividend' "
+        "AND a.currency IS NOT NULL AND a.currency <> 'USD' AND NOT EXISTS (SELECT 1 FROM core.listing l "
         "WHERE l.instrument_type = 'fx' AND l.currency = a.currency)",
     )
-    a.none("prices", "volume is not negative", "SELECT COUNT(*) FROM market.price_bar WHERE volume < 0")
+    a.none("prices", "volume is not negative", "SELECT COUNT(*) FROM equity.price_bar WHERE volume < 0")
     a.none(
         "prices",
         "a split has a positive ratio, a dividend a positive amount",
-        "SELECT COUNT(*) FROM market.corporate_action WHERE (action_type IN ('split', 'spinoff') AND NOT ratio > 0) "
+        "SELECT COUNT(*) FROM equity.corporate_action WHERE (action_type IN ('split', 'spinoff') AND NOT ratio > 0) "
         "OR (action_type = 'cash_dividend' AND NOT amount > 0)",
     )
 
@@ -290,23 +292,24 @@ def _accounts(a: _Audit) -> None:
     a.none(
         "accounts",
         "period types are Q / YTD / FY / I",
-        "SELECT COUNT(*) FROM fund.financial_fact WHERE period_type NOT IN ('Q', 'YTD', 'FY', 'I')",
+        "SELECT COUNT(*) FROM equity.financial_fact WHERE period_type NOT IN ('Q', 'YTD', 'FY', 'I')",
     )
     a.none(
         "accounts",
         "units are dollars, pounds or shares",
-        "SELECT COUNT(*) FROM fund.financial_fact WHERE unit NOT IN ('USD', 'GBP', 'shares')",
+        "SELECT COUNT(*) FROM equity.financial_fact WHERE unit NOT IN ('USD', 'GBP', 'shares')",
     )
     a.none(
         "accounts",
         "an instant has no start, a flow has one",
-        "SELECT COUNT(*) FROM fund.financial_fact WHERE (period_type = 'I' AND period_start IS NOT NULL) "
+        "SELECT COUNT(*) FROM equity.financial_fact WHERE (period_type = 'I' AND period_start IS NOT NULL) "
         "OR (period_type <> 'I' AND period_start IS NULL)",
     )
     a.none(
         "accounts",
         "a quarter is 80-100 days, a year so far 160-290, a year 350-380",
-        "SELECT COUNT(*) FROM fund.financial_fact WHERE (period_type = 'Q' AND DATEDIFF(day, period_start, period_end) "
+        "SELECT COUNT(*) FROM equity.financial_fact "
+        "WHERE (period_type = 'Q' AND DATEDIFF(day, period_start, period_end) "
         "NOT BETWEEN 79 AND 100) OR (period_type = 'FY' AND DATEDIFF(day, period_start, period_end) NOT "
         "BETWEEN 349 AND 380) OR (period_type = 'YTD' AND DATEDIFF(day, period_start, period_end) NOT "
         "BETWEEN 160 AND 290)",
@@ -314,19 +317,20 @@ def _accounts(a: _Audit) -> None:
     a.none(
         "accounts",
         "no figure about a period that had not ended when published",
-        "SELECT COUNT(*) FROM fund.financial_fact WHERE period_end > CAST(published_at AS DATE)",
+        "SELECT COUNT(*) FROM equity.financial_fact WHERE period_end > CAST(published_at AS DATE)",
     )
     a.none(
         "accounts",
         "figures belong to a company with a listing",
-        "SELECT COUNT(*) FROM fund.financial_fact f WHERE NOT EXISTS (SELECT 1 FROM ref.listing l WHERE "
+        "SELECT COUNT(*) FROM equity.financial_fact f WHERE NOT EXISTS (SELECT 1 FROM core.listing l WHERE "
         "l.issuer_id = f.issuer_id)",
     )
     a.none(
         "accounts",
         "SEC figures name a filing that exists",
-        "SELECT COUNT(*) FROM fund.financial_fact f WHERE f.vendor_id = 2 AND f.filing_ref IS NOT NULL AND NOT EXISTS "
-        "(SELECT 1 FROM fund.filing g WHERE g.issuer_id = f.issuer_id AND g.vendor_id = 2 AND g.filing_ref = "
+        "SELECT COUNT(*) FROM equity.financial_fact f "
+        "WHERE f.vendor_id = 2 AND f.filing_ref IS NOT NULL AND NOT EXISTS "
+        "(SELECT 1 FROM equity.filing g WHERE g.issuer_id = f.issuer_id AND g.vendor_id = 2 AND g.filing_ref = "
         "f.filing_ref)",
     )
 
@@ -345,7 +349,7 @@ def _fitness(a: _Audit) -> None:
                  FROM by_day d LEFT JOIN trading_days t ON t.country = d.country AND t.trade_date = d.trade_date
                  GROUP BY YEAR(d.trade_date) ORDER BY y"""
         )
-        start = int(a.one("SELECT YEAR(MIN(start_date)) FROM ref.index_membership"))
+        start = int(a.one("SELECT YEAR(MIN(start_date)) FROM equity.index_membership"))
         cover = {int(y): (p / m if m else 0.0) for y, p, m, _ in rows if int(y) >= start}
         low = {y: round(c, 4) for y, c in cover.items() if c < YEAR_COVERAGE}
         return (low or "every year"), not low, "per year: " + ", ".join(f"{y} {c:.2%}" for y, c in cover.items())
@@ -356,28 +360,29 @@ def _fitness(a: _Audit) -> None:
 
     def year_ends(kind: str) -> tuple[object, bool, str]:
         exists = {
-            "accounts": f"""EXISTS (SELECT 1 FROM fund.financial_fact f JOIN ref.vendor v ON v.vendor_id = f.vendor_id
+            "accounts": f"""EXISTS (SELECT 1 FROM equity.financial_fact f
+                              JOIN core.vendor v ON v.vendor_id = f.vendor_id
                               WHERE f.issuer_id = l.issuer_id AND v.vendor_code IN ({account_vendors})
                                 AND f.item = 'total_assets'
                                 AND f.published_at < d.day AND f.published_at >= DATEADD(day, -{FACT_AGE_DAYS},
                                     d.day))""",
-            "shares": f"""(EXISTS (SELECT 1 FROM market.share_count s WHERE s.listing_id = m.listing_id
+            "shares": f"""(EXISTS (SELECT 1 FROM equity.share_count s WHERE s.listing_id = m.listing_id
                               AND s.as_of_date < d.day AND s.as_of_date >= DATEADD(day, -{SHARES_AGE_DAYS}, d.day))
-                           OR EXISTS (SELECT 1 FROM fund.financial_fact f WHERE f.issuer_id = l.issuer_id
+                           OR EXISTS (SELECT 1 FROM equity.financial_fact f WHERE f.issuer_id = l.issuer_id
                               AND f.vendor_id = 2 AND f.item IN ('shares_cover', 'shares_outstanding')
                               AND f.published_at < d.day AND f.published_at >= DATEADD(day, -{SHARES_AGE_DAYS},
                                   d.day)))""",
         }[kind]
         rows = a.q(
-            f"""WITH first_year AS (SELECT YEAR(MIN(start_date)) AS y FROM ref.index_membership),
+            f"""WITH first_year AS (SELECT YEAR(MIN(start_date)) AS y FROM equity.index_membership),
                 years AS (SELECT TOP (80) f.y + ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS y
                           FROM sys.all_objects CROSS JOIN first_year f),
                 d AS (SELECT DATEFROMPARTS(y, 12, 31) AS day FROM years WHERE y < YEAR(GETDATE()))
                 SELECT y, COUNT(*), SUM(has) FROM (
                     SELECT YEAR(d.day) AS y, CASE WHEN {exists} THEN 1 ELSE 0 END AS has
-                    FROM d JOIN ref.index_membership m ON m.start_date <= d.day AND (m.end_date IS NULL OR
+                    FROM d JOIN equity.index_membership m ON m.start_date <= d.day AND (m.end_date IS NULL OR
                         m.end_date > d.day)
-                    JOIN ref.listing l ON l.listing_id = m.listing_id
+                    JOIN core.listing l ON l.listing_id = m.listing_id
                 ) x GROUP BY y ORDER BY y""",
         )
         cover = {int(y): k / n for y, n, k in rows if n}
@@ -398,16 +403,16 @@ def _fitness(a: _Audit) -> None:
 
     def benchmarks() -> tuple[object, bool, str]:
         rows = a.q(
-            """SELECT u.code, i.value, MIN(p.trade_date), MAX(p.trade_date) FROM ref.universe u
-               LEFT JOIN ref.identifier i ON i.entity_type = 'listing' AND i.entity_id = u.benchmark_listing_id
+            """SELECT u.code, i.value, MIN(p.trade_date), MAX(p.trade_date) FROM equity.universe u
+               LEFT JOIN core.identifier i ON i.entity_type = 'listing' AND i.entity_id = u.benchmark_listing_id
                     AND i.id_type IN ('YAHOO', 'RIC')
-               LEFT JOIN market.price_bar p ON p.listing_id = u.benchmark_listing_id
-               WHERE EXISTS (SELECT 1 FROM ref.universe_component c JOIN ref.index_membership m
+               LEFT JOIN equity.price_bar p ON p.listing_id = u.benchmark_listing_id
+               WHERE EXISTS (SELECT 1 FROM equity.universe_component c JOIN equity.index_membership m
                              ON m.index_id = c.index_id WHERE c.universe_id = u.universe_id)
                GROUP BY u.code, i.value"""
         )
-        newest = a.one("SELECT MAX(trade_date) FROM market.price_bar")
-        start = a.one("SELECT MIN(start_date) FROM ref.index_membership")
+        newest = a.one("SELECT MAX(trade_date) FROM equity.price_bar")
+        start = a.one("SELECT MIN(start_date) FROM equity.index_membership")
         bad = [
             f"{code} ({value}): {lo}..{hi}"
             for code, value, lo, hi in rows
@@ -422,9 +427,9 @@ def _fitness(a: _Audit) -> None:
         lambda: (
             missing := int(
                 a.one(
-                    """SELECT COUNT(DISTINCT l.issuer_id) FROM ref.index_membership m
-                       JOIN ref.listing l ON l.listing_id = m.listing_id
-                       WHERE m.end_date IS NULL AND NOT EXISTS (SELECT 1 FROM ref.classification c
+                    """SELECT COUNT(DISTINCT l.issuer_id) FROM equity.index_membership m
+                       JOIN core.listing l ON l.listing_id = m.listing_id
+                       WHERE m.end_date IS NULL AND NOT EXISTS (SELECT 1 FROM equity.classification c
                              WHERE c.issuer_id = l.issuer_id AND c.valid_to IS NULL)"""
                 )
             ),
@@ -435,16 +440,16 @@ def _fitness(a: _Audit) -> None:
 
     def preferred() -> tuple[object, bool, str]:
         tables = {
-            "prices": "market.price_bar",
-            "members": "ref.index_membership",
-            "fundamentals": "fund.financial_fact",
-            "classification": "ref.classification",
+            "prices": "equity.price_bar",
+            "members": "equity.index_membership",
+            "fundamentals": "equity.financial_fact",
+            "classification": "equity.classification",
         }
         have = {
             what: {
                 c
                 for (c,) in a.q(
-                    f"SELECT DISTINCT v.vendor_code FROM {t} x JOIN ref.vendor v ON v.vendor_id = x.vendor_id"
+                    f"SELECT DISTINCT v.vendor_code FROM {t} x JOIN core.vendor v ON v.vendor_id = x.vendor_id"
                 )
             }
             for what, t in tables.items()
@@ -496,7 +501,7 @@ def _lineage(a: _Audit, sample: int) -> None:
 
     def unread() -> tuple[object, bool, str]:
         rows = a.q(
-            "SELECT v.vendor_code, b.dataset, COUNT(*) FROM ingest.batch b JOIN ref.vendor v ON v.vendor_id = "
+            "SELECT v.vendor_code, b.dataset, COUNT(*) FROM ingest.batch b JOIN core.vendor v ON v.vendor_id = "
             "b.vendor_id "
             "WHERE b.status = 'landed' GROUP BY v.vendor_code, b.dataset"
         )

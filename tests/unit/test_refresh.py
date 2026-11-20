@@ -3,9 +3,9 @@ from typing import Any, cast
 import pytest
 from sqlalchemy.engine import Engine
 
+from equity_research.data.cache import ResearchCache
 from equity_research.pipelines import refresh as r
-from equity_research.quality.checks import CheckResult, GateFailedError
-from equity_research.research.cache import ResearchCache
+from research_core.data.quality import CheckResult, GateFailedError
 
 
 class _Cache:

@@ -8,13 +8,13 @@ import pytest
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DBAPIError, PendingRollbackError
 
-from equity_research import ops
 from equity_research.ingest.vendors.refinitiv import fields as f
 from equity_research.ingest.vendors.refinitiv import normalize as norm
 from equity_research.ingest.vendors.refinitiv.client import LsegClient, RequestShapeError, RunawayRequestError
-from equity_research.ops import KeepAlive
 from equity_research.pipelines import load_estimates as load_estimates_module
 from equity_research.pipelines.load_estimates import last_month_end, live_first, month_ends
+from research_core.data import ops
+from research_core.data.ops import KeepAlive
 
 
 def test_consensus_reads_any_measures_columns() -> None:

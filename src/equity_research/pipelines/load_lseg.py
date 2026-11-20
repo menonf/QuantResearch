@@ -22,8 +22,9 @@ Steps, in dependency order (each later step needs the listings of the first):
 5. ``statements`` - quarterly statements and the day each quarter was first announced.
 ``fx`` (London) - after ``actions``: the daily exchange rates of every currency the market's dividends are declared
    in, as ``fx`` listings (one unit of the currency, in US dollars) - research converts such dividends on their ex-date.
-``quotes`` (London) - each bar's currency: some lines change the currency they are quoted in, which LSEG's histories do
-   not say (:func:`~.normalize.quote_currencies`).
+``quotes`` (London) - after ``shares``: each bar's currency: some lines change the currency they are quoted in, which
+   LSEG's histories do not say (:func:`~.normalize.quote_currencies`); the share counts tell a consolidation LSEG has
+   no action for from such a change.
 6. ``annuals`` - yearly statement items LSEG answers only one field at a time (cash flows, depreciation, inventories,
    unusual items, bank items: ``fields.ANNUAL_ITEMS``), dated by the fiscal year's announcement from step 5.
 
@@ -50,23 +51,36 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import UpsertResult, upsert
+from equity_research.data import schema
 from equity_research.ingest.classification import record as record_classification
-from equity_research.ingest.identity import OPEN_START, add_identifiers, anchor_map, ensure_listings, merge_listings
-from equity_research.ingest.membership import clip_to_first_trade, coalesce, disjoint
+from equity_research.ingest.membership import clip_to_first_trade, close_at_delisting, coalesce, disjoint
 from equity_research.ingest.reference import INDEXES, level_codes, write_reference
 from equity_research.ingest.vendors.refinitiv import VENDOR, rics
 from equity_research.ingest.vendors.refinitiv import fields as f
 from equity_research.ingest.vendors.refinitiv import normalize as norm
 from equity_research.ingest.vendors.refinitiv.client import LsegClient, RequestShapeError, ThrottledError
-from equity_research.raw.store import find_batch, land_frame, mark, read_frame, status
+from research_core.data import ops
+from research_core.data.db import schema as core_schema
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import UpsertResult, upsert
+from research_core.data.identity import OPEN_START, add_identifiers, anchor_map, ensure_listings, merge_listings
+from research_core.data.raw_store import find_batch, land_frame, mark, read_frame, status
 
 log = logging.getLogger(__name__)
 
-START = "2005-01-01"
+#: The first day a build asks for. LSEG answers members, prices (London's official closes too), actions, statements,
+#: estimates and exchange rates from January 2000 - but its S&P 400 and 600 histories begin 2001-07-20 and 2001-01-16
+#: (all their members "join" that day): before then the S&P 1500 is the S&P 500 alone (checked live 2026-11-15).
+START = "2000-01-01"
+#: A listing is retired when every RIC it ever had is retired (a renamed share line keeps its old RIC as an alias and
+#: is still live).
+RETIRED_LISTINGS = """
+    SELECT l.listing_id FROM core.listing l
+    WHERE EXISTS (SELECT 1 FROM core.identifier i WHERE i.entity_type = 'listing' AND i.entity_id = l.listing_id
+                  AND i.id_type = 'RIC' AND CHARINDEX('^', i.value) > 0)
+      AND NOT EXISTS (SELECT 1 FROM core.identifier i WHERE i.entity_type = 'listing'
+                      AND i.entity_id = l.listing_id AND i.id_type = 'RIC' AND CHARINDEX('^', i.value) = 0)
+"""
 #: On a build, a step replayed (the same day: from the raw zone, no requests) once a later step has given it what it
 #: reads: members are clipped to their listing's first trade, and splits confirmed by the share count.
 REPLAYED_AFTER = {"prices": "universe", "shares": "actions"}
@@ -142,7 +156,8 @@ UK = Market(
     norm.PENCE,
     "GBP",
     tuple(f.DIVIDEND_CURRENCY_FIELDS),
-    ("universe", "prices", "actions", "fx", "quotes", "shares", "statements"),
+    # shares before quotes: a consolidation LSEG has no action for is told from a change of quote currency by its count
+    ("universe", "prices", "actions", "fx", "shares", "quotes", "statements"),
     {"instruments": 10, "actions": 35, "shares": 70, "statements": 40},
     company_fields=True,
     half_years=True,
@@ -232,7 +247,7 @@ def market_rics(engine: Engine, market: Market) -> dict[str, int]:
     """
     with engine.connect() as conn:
         every = anchor_map(conn, "listing", "RIC")
-        mics = dict(conn.execute(sa.select(schema.listing.c.listing_id, schema.listing.c.exchange_mic)).all())
+        mics = dict(conn.execute(sa.select(core_schema.listing.c.listing_id, core_schema.listing.c.exchange_mic)).all())
     foreign = {v for t, v in level_codes() if t == "RIC"} - set(market_levels(market))
     claimed = frozenset().union(*(m.exchanges or frozenset() for m in MARKETS.values()))
 
@@ -373,6 +388,7 @@ class LsegLoad:
                     conn.execute(sa.select(p.c.listing_id, sa.func.min(p.c.trade_date)).group_by(p.c.listing_id)).all()
                 )
             )
+            retired_until = self._retired_last_days(conn)
             # a market's indices never share a member: one the replay leaves in two is put in one (chains largest first)
             spells = pd.concat(
                 [self._spells(index_ids[code], frame_, line_of) for code, (_, frame_, _) in intervals.items()],
@@ -388,7 +404,7 @@ class LsegLoad:
             for code, (events_id, _, _) in intervals.items():
                 index_id = index_ids[code]
                 own = spells[spells["index_id"] == index_id]
-                self._replace_memberships(conn, index_id, own, report, events_id, first_trade)
+                self._replace_memberships(conn, index_id, own, report, events_id, first_trade, retired_until)
             for used_id in sorted(set(used)):
                 mark(conn, used_id, "normalized")
         return report
@@ -497,7 +513,7 @@ class LsegLoad:
         ``frame[batch_id]`` is the classification batch each row came from: each is recorded under its own.
         """
         lid = frame["anchor"].map(listing_ids)
-        issuers = dict(conn.execute(sa.select(schema.listing.c.listing_id, schema.listing.c.issuer_id)).all())
+        issuers = dict(conn.execute(sa.select(core_schema.listing.c.listing_id, core_schema.listing.c.issuer_id)).all())
         rows = frame.assign(issuer_id=lid.map(issuers)).dropna(subset=["issuer_id"]).drop_duplicates("issuer_id")
         opened = closed = 0
         for batch_id, group in rows.dropna(subset=["sector"]).groupby("batch_id", dropna=False):
@@ -516,7 +532,7 @@ class LsegLoad:
                 "incorporations",
                 upsert(
                     conn,
-                    schema.issuer,
+                    core_schema.issuer,
                     incorporated[["issuer_id", "incorporated"]].rename(
                         columns={"incorporated": "incorporation_country"}
                     ),
@@ -529,7 +545,7 @@ class LsegLoad:
                 "domiciles",
                 upsert(
                     conn,
-                    schema.issuer,
+                    core_schema.issuer,
                     homes[["issuer_id", "issuer_domicile"]].rename(columns={"issuer_domicile": "domicile_country"}),
                     key=["issuer_id"],
                 ),
@@ -557,16 +573,23 @@ class LsegLoad:
         report: StepReport,
         batch_id: int,
         first_trade: pd.Series,
+        retired_until: pd.Series,
     ) -> None:
         """The index's membership as replayed today (a replay is the whole truth, so it replaces the stored one).
 
         No spell starts before the listing first traded (a member with no join event in the window is dated to its
-        start - see ``ingest.membership``). Only what changed is written: a spell the replay no longer has is
-        deleted, the others upserted - so a repeated replay writes nothing.
+        start - see ``ingest.membership``), and a retired listing's open spell ends the day after its last trade, as
+        :meth:`_close_retired` ends it once prices are in. Only what changed is written: a spell the replay no longer
+        has is deleted, the others upserted - so a repeated replay writes nothing (until 2026-11-17 a leaver LSEG's
+        events miss was written open by every replay and closed again after the prices: two writes a run).
         """
         t = schema.index_membership
         rows, clipped = clip_to_first_trade(rows, first_trade)
         report.notes["memberships_clipped"] = int(report.notes.get("memberships_clipped", 0)) + clipped
+        rows, closed = close_at_delisting(rows, retired_until)
+        report.notes["memberships_closed_at_last_trade"] = (
+            int(report.notes.get("memberships_closed_at_last_trade", 0)) + closed
+        )
         mine = (t.c.index_id == index_id, t.c.vendor_id == vendor_id(VENDOR))
         held = {
             (int(i), pd.Timestamp(d)) for i, d in conn.execute(sa.select(t.c.listing_id, t.c.start_date).where(*mine))
@@ -657,6 +680,17 @@ class LsegLoad:
             self._close_retired(conn)
         return report
 
+    @staticmethod
+    def _retired_last_days(conn: Connection) -> pd.Series:
+        """``listing_id`` -> last trading day (``delisted_on``) of every retired listing that has one."""
+        rows = conn.execute(
+            sa.text(
+                "SELECT listing_id, delisted_on FROM core.listing WHERE delisted_on IS NOT NULL "
+                f"AND listing_id IN ({RETIRED_LISTINGS})"
+            )
+        ).all()
+        return pd.Series({int(i): pd.Timestamp(d) for i, d in rows}, dtype="datetime64[ns]")
+
     def _close_retired(self, conn: Connection) -> None:
         """Retired listings get ``delisted_on`` and a ticker dated to their lifetime; live ones a ticker dated sooner.
 
@@ -665,17 +699,11 @@ class LsegLoad:
         company by ticker and date (Norgate's ``LEH-200809``) finds it - and not today's holder of that ticker. A live
         listing's ticker that a retired one held before it is dated from the live one's first trade.
         """
-        retired = """
-            SELECT l.listing_id FROM ref.listing l
-            WHERE EXISTS (SELECT 1 FROM ref.identifier i WHERE i.entity_type = 'listing' AND i.entity_id = l.listing_id
-                          AND i.id_type = 'RIC' AND CHARINDEX('^', i.value) > 0)
-              AND NOT EXISTS (SELECT 1 FROM ref.identifier i WHERE i.entity_type = 'listing'
-                              AND i.entity_id = l.listing_id AND i.id_type = 'RIC' AND CHARINDEX('^', i.value) = 0)
-        """
+        retired = RETIRED_LISTINGS
         conn.execute(
             sa.text(
-                "UPDATE l SET delisted_on = p.last_day FROM ref.listing l JOIN ("
-                "SELECT listing_id, MAX(trade_date) AS last_day FROM market.price_bar WHERE vendor_id = :v "
+                "UPDATE l SET delisted_on = p.last_day FROM core.listing l JOIN ("
+                "SELECT listing_id, MAX(trade_date) AS last_day FROM equity.price_bar WHERE vendor_id = :v "
                 f"GROUP BY listing_id) p ON p.listing_id = l.listing_id WHERE l.listing_id IN ({retired}) "
                 "AND (l.delisted_on IS NULL OR l.delisted_on <> p.last_day)"
             ),
@@ -685,8 +713,8 @@ class LsegLoad:
         # trade, not for ever
         conn.execute(
             sa.text(
-                "UPDATE m SET end_date = DATEADD(day, 1, l.delisted_on) FROM ref.index_membership m "
-                "JOIN ref.listing l ON l.listing_id = m.listing_id "
+                "UPDATE m SET end_date = DATEADD(day, 1, l.delisted_on) FROM equity.index_membership m "
+                "JOIN core.listing l ON l.listing_id = m.listing_id "
                 f"WHERE m.vendor_id = :v AND m.end_date IS NULL AND l.listing_id IN ({retired}) "
                 "AND l.delisted_on IS NOT NULL AND m.start_date <= l.delisted_on"
             ),
@@ -697,9 +725,9 @@ class LsegLoad:
                 sa.text(
                     "SELECT l.listing_id, i.value AS ric, MIN(p.trade_date) AS first_day, l.delisted_on, "
                     "MAX(CASE WHEN p.trade_date = l.delisted_on THEN p.batch_id END) AS batch_id "
-                    "FROM ref.listing l JOIN ref.identifier i ON i.entity_type = 'listing' "
+                    "FROM core.listing l JOIN core.identifier i ON i.entity_type = 'listing' "
                     "AND i.entity_id = l.listing_id AND i.id_type = 'RIC' "
-                    "JOIN market.price_bar p ON p.listing_id = l.listing_id AND p.vendor_id = :v "
+                    "JOIN equity.price_bar p ON p.listing_id = l.listing_id AND p.vendor_id = :v "
                     f"WHERE l.listing_id IN ({retired}) AND l.instrument_type = 'equity' AND l.delisted_on IS NOT NULL "
                     "AND (l.exchange_mic IS NULL OR l.exchange_mic <> 'XLON') "  # London RICs do not spell tickers
                     "GROUP BY l.listing_id, i.value, l.delisted_on"
@@ -733,15 +761,15 @@ class LsegLoad:
             sa.text(
                 """
                 UPDATE t SET valid_from = f.first_day
-                FROM ref.identifier t
-                JOIN (SELECT listing_id, MIN(trade_date) AS first_day FROM market.price_bar WHERE vendor_id = :v
+                FROM core.identifier t
+                JOIN (SELECT listing_id, MIN(trade_date) AS first_day FROM equity.price_bar WHERE vendor_id = :v
                       GROUP BY listing_id) f ON f.listing_id = t.entity_id
                 WHERE t.entity_type = 'listing' AND t.id_type = 'TICKER' AND t.valid_to IS NULL
                   AND t.valid_from < f.first_day
-                  AND EXISTS (SELECT 1 FROM ref.identifier o WHERE o.entity_type = 'listing' AND o.id_type = 'TICKER'
+                  AND EXISTS (SELECT 1 FROM core.identifier o WHERE o.entity_type = 'listing' AND o.id_type = 'TICKER'
                               AND o.value = t.value AND o.market = t.market AND o.entity_id <> t.entity_id
                               AND o.valid_to IS NOT NULL AND o.valid_to <= f.first_day)
-                  AND NOT EXISTS (SELECT 1 FROM ref.identifier d WHERE d.id_type = 'TICKER' AND d.value = t.value
+                  AND NOT EXISTS (SELECT 1 FROM core.identifier d WHERE d.id_type = 'TICKER' AND d.value = t.value
                                   AND d.market = t.market AND d.valid_from = f.first_day)
                 """
             ),
@@ -961,7 +989,7 @@ class LsegLoad:
         Its sub-unit too (pence: a hundredth); dollars from the market's own rate (each rate is in dollars per unit).
         """
         own = self.market.level_currency
-        p, t = schema.price_bar, schema.listing
+        p, t = schema.price_bar, core_schema.listing
         with self.engine.connect() as conn:
             rows = conn.execute(
                 sa.select(t.c.currency, p.c.trade_date, p.c.close)
@@ -1007,7 +1035,7 @@ class LsegLoad:
                 for (i,) in conn.execute(
                     sa.text(
                         "SELECT DISTINCT listing_id FROM (SELECT listing_id, [close], LAG([close]) OVER "
-                        "(PARTITION BY listing_id ORDER BY trade_date) AS prev FROM market.price_bar "
+                        "(PARTITION BY listing_id ORDER BY trade_date) AS prev FROM equity.price_bar "
                         "WHERE vendor_id = :v) x "
                         "WHERE prev > 0 AND [close] > 0 AND ABS(LOG([close] / prev)) > LOG(5.0)"
                     ),
@@ -1016,7 +1044,7 @@ class LsegLoad:
             }
         todo = sorted((jumpers | {i for i, c in now.items() if c != default}) & mine)
         changed = 0
-        p, a = schema.price_bar, schema.corporate_action
+        p, a, s = schema.price_bar, schema.corporate_action, schema.share_count
         for listing_id in todo:
             with self.engine.connect() as conn:
                 bars = pd.DataFrame(
@@ -1035,9 +1063,18 @@ class LsegLoad:
                         )
                     ).all()
                 }
+                # a capital change LSEG has no action for still shows in the line's own share count
+                counted = conn.execute(
+                    sa.select(s.c.as_of_date, s.c.shares).where(
+                        s.c.listing_id == listing_id, s.c.vendor_id == vendor_id(VENDOR), s.c.kind == "outstanding"
+                    )
+                ).all()
             if bars.empty:
                 continue
-            found = norm.quote_currencies(bars, now.get(listing_id, default), rates, quiet)
+            counts = pd.Series(
+                [float(v) for _, v in counted], index=pd.DatetimeIndex([pd.Timestamp(d) for d, _ in counted])
+            )
+            found = norm.quote_currencies(bars, now.get(listing_id, default), rates, quiet, counts)
             moved = bars.assign(currency=found)[found != bars["currency"]]
             if moved.empty:
                 continue
@@ -1051,7 +1088,7 @@ class LsegLoad:
                 )
                 upsert(
                     conn,
-                    schema.listing,
+                    core_schema.listing,
                     pd.DataFrame({"listing_id": [listing_id], "currency": [str(found.iloc[-1])]}),
                     key=["listing_id"],
                 )
@@ -1100,7 +1137,9 @@ class LsegLoad:
             return self._half_years(since, report)
         ids = self.listing_ids()
         with self.engine.connect() as conn:
-            issuer_of = dict(conn.execute(sa.select(schema.listing.c.listing_id, schema.listing.c.issuer_id)).all())
+            issuer_of = dict(
+                conn.execute(sa.select(core_schema.listing.c.listing_id, core_schema.listing.c.issuer_id)).all()
+            )
         begin = (pd.Timestamp(since) - pd.DateOffset(years=1)).date() if since else pd.Timestamp(self.start).date()
         window = {"SDate": begin.isoformat(), "EDate": self.end, **f.QUARTERLY}
         in_dollars = {**window, **f.STATEMENT_PARAMS}
@@ -1136,7 +1175,9 @@ class LsegLoad:
         """
         ids = self.listing_ids()
         with self.engine.connect() as conn:
-            issuer_of = dict(conn.execute(sa.select(schema.listing.c.listing_id, schema.listing.c.issuer_id)).all())
+            issuer_of = dict(
+                conn.execute(sa.select(core_schema.listing.c.listing_id, core_schema.listing.c.issuer_id)).all()
+            )
         begin = (pd.Timestamp(since) - pd.DateOffset(years=1)).date() if since else pd.Timestamp(self.start).date()
         window = {"SDate": begin.isoformat(), "EDate": self.end}
         currency = {"Curn": self.market.level_currency}
@@ -1186,7 +1227,9 @@ class LsegLoad:
                 .where(fact.c.vendor_id == vendor_id(VENDOR), fact.c.item == "revenue")
                 .group_by(fact.c.issuer_id, fact.c.period_end)
             ).all()
-            issuer_of = dict(conn.execute(sa.select(schema.listing.c.listing_id, schema.listing.c.issuer_id)).all())
+            issuer_of = dict(
+                conn.execute(sa.select(core_schema.listing.c.listing_id, core_schema.listing.c.issuer_id)).all()
+            )
         held = pd.DataFrame(rows, columns=["issuer_id", "period_end", "announced_at"])
         rics_of = pd.DataFrame(
             [(ric, issuer_of.get(listing)) for ric, listing in self.listing_ids().items()], columns=["ric", "issuer_id"]
@@ -1201,7 +1244,9 @@ class LsegLoad:
         report = report or StepReport()
         ids = self.listing_ids()
         with self.engine.connect() as conn:
-            issuer_of = dict(conn.execute(sa.select(schema.listing.c.listing_id, schema.listing.c.issuer_id)).all())
+            issuer_of = dict(
+                conn.execute(sa.select(core_schema.listing.c.listing_id, core_schema.listing.c.issuer_id)).all()
+            )
         begin = (pd.Timestamp(since) - pd.DateOffset(years=1)).date() if since else pd.Timestamp(self.start).date()
         window = {"SDate": begin.isoformat(), "EDate": self.end, **f.YEARLY_STATEMENT_PARAMS}
         announced = self.announcements_held()
@@ -1523,7 +1568,7 @@ def probe_uk(client: LsegClient | None = None) -> pd.DataFrame:
     """
     c = client or LsegClient()
     tries: list[tuple[str, Any]] = [
-        ("members: FTSE 100 / 250 / SmallCap since 2005", lambda: _uk_members(c)),
+        ("members: FTSE 100 / 250 / SmallCap since 2000", lambda: _uk_members(c)),
         ("official closes (live and retired)", lambda: _uk_closes(c)),
         ("prices in pence", lambda: _uk_currency(c)),
         ("codes: ISIN, SEDOL, exchange ticker", lambda: _uk_codes(c)),

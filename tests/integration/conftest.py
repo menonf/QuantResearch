@@ -7,10 +7,10 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from equity_research.db import engine as db_engine
-from equity_research.db import migrate
-from equity_research.db.engine import get_engine
-from equity_research.settings import get_settings
+from research_core.data.db import engine as db_engine
+from research_core.data.db import migrate
+from research_core.data.db.engine import get_engine
+from research_core.settings import get_settings
 
 
 @pytest.fixture(scope="session")

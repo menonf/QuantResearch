@@ -7,9 +7,9 @@
 2. each SimFin company is matched to one of our issuers: by its SimFin id once known, else by CIK (recorded by the
    SEC load), else through one of its listings by ISIN, then by ticker on the day it last published (tickers are
    reused) or today - unmatched ones are counted, never created. The SimFin id becomes an issuer identifier;
-3. US-dollar statements of matched companies become ``fund.financial_fact`` rows with vendor ``simfin``
+3. US-dollar statements of matched companies become ``equity.financial_fact`` rows with vendor ``simfin``
    (insert-only: a later file adds a row only for a figure SimFin restated), its sector labels a
-   ``ref.classification`` under scheme ``SF``.
+   ``equity.classification`` under scheme ``SF``.
 
 Dates: SimFin re-dates a figure whenever a later report repeats it, so its restated date is usually a year after the
 figure was public. A figure the SEC's first report confirms (same value, see
@@ -30,17 +30,18 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import UpsertResult, upsert
+from equity_research.data import schema
 from equity_research.ingest.classification import record as record_classification
-from equity_research.ingest.identity import US_MARKETS, add_identifiers, anchor_map, match_listings
 from equity_research.ingest.vendors.simfin import VENDOR
 from equity_research.ingest.vendors.simfin import normalize as norm
 from equity_research.ingest.vendors.simfin.client import DATASETS, SimFinClient
-from equity_research.raw.store import Batch, land_file, mark, recent_batch
-from equity_research.settings import get_settings
+from research_core.data import ops
+from research_core.data.db import schema as core_schema
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import UpsertResult, upsert
+from research_core.data.identity import US_MARKETS, add_identifiers, anchor_map, match_listings
+from research_core.data.raw_store import Batch, land_file, mark, recent_batch
+from research_core.settings import get_settings
 
 log = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def match_companies(conn: Connection, companies: pd.DataFrame, last_published: p
     take(out["simfin_id"].map(known), "SIMFIN")
     by_cik = anchor_map(conn, "issuer", "CIK")
     take(out["cik"].map(by_cik), "CIK")
-    issuer_of = dict(conn.execute(sa.select(schema.listing.c.listing_id, schema.listing.c.issuer_id)).all())
+    issuer_of = dict(conn.execute(sa.select(core_schema.listing.c.listing_id, core_schema.listing.c.issuer_id)).all())
     last = out["simfin_id"].map(last_published)
     recent = last >= pd.Timestamp(dt.date.today()) - pd.Timedelta(days=STILL_REPORTING_DAYS)
     attempts = (
@@ -125,7 +126,7 @@ def sec_first_reported(engine: Engine, items: set[str]) -> pd.DataFrame:
         SELECT issuer_id, item, period_type, period_end, value, published_at FROM (
             SELECT issuer_id, item, period_type, period_end, value, published_at,
                    ROW_NUMBER() OVER (PARTITION BY issuer_id, item, period_type, period_end ORDER BY published_at) AS n
-            FROM fund.financial_fact
+            FROM equity.financial_fact
             WHERE vendor_id = :sec AND period_type IN ('Q', 'I') AND item IN :items
         ) f WHERE n = 1
         """

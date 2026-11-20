@@ -163,3 +163,9 @@ def test_a_listing_in_one_index_and_a_member_today_are_left_alone() -> None:
     spells = _in((FTSE250, "2005-01-01", None))
     out, counts = disjoint(spells, "2005-01-01", {(FTSE250, 7)}, PRIORITY)
     assert _dates(out) == [(FTSE250, "2005-01-01", None)] and counts == {"moved": 0, "halved": 0, "by_priority": 0}
+
+
+def test_a_spell_starting_after_the_last_trade_is_not_closed_before_it_starts() -> None:
+    spells = _spells((1, "2024-12-02", None))
+    out, closed = close_at_delisting(spells, pd.Series({1: pd.Timestamp("2024-11-21")}))
+    assert missing(out["end_date"].iloc[0]) and closed == 0

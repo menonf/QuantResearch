@@ -122,7 +122,7 @@ def _one(engine: Engine, sql: str) -> Any:
 
 def _listing(ticker: str) -> str:
     return (
-        "(SELECT entity_id FROM ref.identifier WHERE entity_type = 'listing' AND id_type = 'TICKER' "
+        "(SELECT entity_id FROM core.identifier WHERE entity_type = 'listing' AND id_type = 'TICKER' "
         f"AND value = '{ticker}')"
     )
 
@@ -140,12 +140,12 @@ def test_tiingo_prices_the_listings_it_can_and_continues_after_its_allowance(see
     assert second["disagreed"] == 1 and second["disagreed_sample"] == ["CCC"]
 
     tiingo = "vendor_id = 6"
-    assert _one(seeded, f"SELECT COUNT(*) FROM market.price_bar WHERE {tiingo} AND listing_id = {_listing('CCC')}") == 0
-    aaa_close = f"SELECT [close] FROM market.price_bar WHERE {tiingo} AND listing_id = {_listing('AAA')}"
+    assert _one(seeded, f"SELECT COUNT(*) FROM equity.price_bar WHERE {tiingo} AND listing_id = {_listing('CCC')}") == 0
+    aaa_close = f"SELECT [close] FROM equity.price_bar WHERE {tiingo} AND listing_id = {_listing('AAA')}"
     assert _one(seeded, aaa_close + " AND trade_date = '2024-01-31'") == 200  # real, before the 2-for-1 split
-    split = f"SELECT ratio FROM market.corporate_action WHERE {tiingo} AND action_type = 'split'"
+    split = f"SELECT ratio FROM equity.corporate_action WHERE {tiingo} AND action_type = 'split'"
     assert float(_one(seeded, split)) == pytest.approx(2.0)
-    old_last = f"SELECT MAX(trade_date) FROM market.price_bar WHERE {tiingo} AND listing_id = {_listing('OLD')}"
+    old_last = f"SELECT MAX(trade_date) FROM equity.price_bar WHERE {tiingo} AND listing_id = {_listing('OLD')}"
     assert str(_one(seeded, old_last)) == "2024-02-15"  # its last day, nothing after it was delisted
 
     third_client = FakeTiingo()
@@ -157,22 +157,22 @@ def test_simfin_attaches_accounts_to_our_companies(seeded: Engine) -> None:
     with seeded.begin() as c:  # the SEC's first report of AAA's revenue: the same figure, two days earlier
         c.execute(
             sa.text(
-                "INSERT INTO fund.financial_fact (issuer_id, vendor_id, item, period_type, period_end, published_at, "
+                "INSERT INTO equity.financial_fact (issuer_id, vendor_id, item, period_type, period_end, published_at, "
                 "period_start, value, unit) SELECT issuer_id, 2, 'revenue', 'Q', '2023-12-30', '2024-02-08', "
-                f"'2023-10-01', 1000, 'USD' FROM ref.listing WHERE listing_id = {_listing('AAA')}"
+                f"'2023-10-01', 1000, 'USD' FROM core.listing WHERE listing_id = {_listing('AAA')}"
             )
         )
     first = load_simfin(seeded, client=cast(SimFinClient, FakeSimFin()), today=TODAY.date())
     assert first["companies"] == 4 and first["matched"] == 3  # ZZZ is not one of ours
     assert first["by"] == {"TICKER": 3}
     assert first["classifications"]["opened"] == 3
-    facts = "SELECT COUNT(*) FROM fund.financial_fact WHERE vendor_id = 7"
+    facts = "SELECT COUNT(*) FROM equity.financial_fact WHERE vendor_id = 7"
     assert _one(seeded, facts) == 3 * 3 + 2
-    cost = "SELECT value FROM fund.financial_fact WHERE vendor_id = 7 AND item = 'cost_of_revenue' AND value = 600"
+    cost = "SELECT value FROM equity.financial_fact WHERE vendor_id = 7 AND item = 'cost_of_revenue' AND value = 600"
     assert _one(seeded, cost) == 600  # positive, as the SEC's
-    assert _one(seeded, "SELECT COUNT(*) FROM ref.identifier WHERE id_type = 'SIMFIN'") == 3
-    assert _one(seeded, "SELECT COUNT(*) FROM ref.issuer") == 4  # nothing created
-    dated = "SELECT published_at FROM fund.financial_fact WHERE vendor_id = 7 AND item = '{}' AND value = {}"
+    assert _one(seeded, "SELECT COUNT(*) FROM core.identifier WHERE id_type = 'SIMFIN'") == 3
+    assert _one(seeded, "SELECT COUNT(*) FROM core.issuer") == 4  # nothing created
+    dated = "SELECT published_at FROM equity.financial_fact WHERE vendor_id = 7 AND item = '{}' AND value = {}"
     assert str(_one(seeded, dated.format("revenue", 1000))) == "2024-02-10 00:00:00"  # confirmed: first publication
     assert str(_one(seeded, dated.format("net_income", 100))) == "2025-02-07 00:00:00"  # unconfirmed: restated
     assert first["dates"]["income_quarterly"] == {"no_sec_figure": 8, "confirmed_by_sec": 1}

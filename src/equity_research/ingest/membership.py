@@ -224,10 +224,13 @@ def close_at_delisting(rows: pd.DataFrame, last_day: pd.Series) -> tuple[pd.Data
 
     ``last_day``: ``listing_id`` -> its last trading day, for delisted listings only. A vendor whose membership is a
     daily 1 / 0 series (Norgate) stops the series on a delisted share's last day, still at 1 - the spell would stay
-    open for ever and count a company bought years ago as a member today.
+    open for ever and count a company bought years ago as a member today. A vendor whose event list misses a leaver
+    (LSEG: a company bought) replays the spell open on every run; closing it here, before it is written, makes the
+    replay say what the database already holds, so a repeated load writes nothing. A spell starting after the last
+    trade is left alone (it cannot end before it starts).
     """
     end = pd.to_datetime(rows["end_date"])
     last = pd.to_datetime(rows["listing_id"].map(last_day))
-    shut = end.isna() & last.notna()
+    shut = end.isna() & last.notna() & (pd.to_datetime(rows["start_date"]) <= last)
     out = rows.assign(end_date=end.where(~shut, last + pd.Timedelta(days=1)))
     return out, int(shut.sum())

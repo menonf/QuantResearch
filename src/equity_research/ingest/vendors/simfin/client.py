@@ -12,7 +12,7 @@ from pathlib import Path
 
 import requests
 
-from equity_research.settings import api_key
+from research_core.settings import api_key
 
 log = logging.getLogger(__name__)
 

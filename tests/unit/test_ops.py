@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError
 
-from equity_research import ops
+from research_core.data import ops
 
 
 class _Lock:

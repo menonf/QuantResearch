@@ -1,4 +1,4 @@
-"""Write the repository's corrections (``ingest/corrections``) to ``market.corporate_action``, vendor ``repository``.
+"""Write the repository's corrections (``ingest/corrections``) to ``equity.corporate_action``, vendor ``repository``.
 
     report = load_corrections(engine)     # {"written": n, "unknown_lines": [...], "unpriced": [...]}
 
@@ -13,7 +13,7 @@ Steps:
    day - the first vendor that priced both, by ``vendor_id`` - and skipped and reported when either is unpriced.
 
 Re-running is safe: an unchanged file lands no new batch and writes nothing new. Research reads a correction only where
-the prices' vendor has no split or spin-off of its own near it (:func:`~equity_research.research.data.price_actions`),
+the prices' vendor has no split or spin-off of its own near it (:func:`~equity_research.data.universe.price_actions`),
 so a vendor that later records the event is not counted twice.
 """
 
@@ -26,12 +26,13 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import upsert
+from equity_research.data import schema
 from equity_research.ingest.corrections import PATH, distribution_ratio, read_corrections
-from equity_research.raw.store import land_frame, mark
+from research_core.data import ops
+from research_core.data.db import schema as core_schema
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import upsert
+from research_core.data.raw_store import land_frame, mark
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def load_corrections(engine: Engine, path: Any = PATH) -> dict[str, Any]:
             frame=table.assign(ex_date=table["ex_date"].dt.date.astype(str)),
         )
         rics = sorted(set(table["ric"]) | set(table["distributed_ric"].dropna()))
-        i = schema.identifier
+        i = core_schema.identifier
         found = conn.execute(
             sa.select(i.c.value, i.c.entity_id).where(
                 i.c.entity_type == "listing", i.c.id_type == "RIC", i.c.value.in_(rics)

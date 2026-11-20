@@ -5,9 +5,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from equity_research.db.schema import RULE_TYPES
-from equity_research.research import barings_garp as bg
-from equity_research.research import rules as ru
+from equity_research.strategies import barings_garp as bg
+from equity_research.strategies import rules as ru
+from research_core.data.db.schema import RULE_TYPES
 
 GEMS = ru.RULE_FILES["gems-2026-11"]
 

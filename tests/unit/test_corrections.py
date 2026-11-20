@@ -13,6 +13,22 @@ def test_the_repositorys_corrections_are_well_formed() -> None:
     assert (table.loc[table["action_type"] == "split", "ratio"] > 0).all()
 
 
+@pytest.mark.parametrize(
+    ("ric", "before", "after"),
+    [
+        ("CCL.L^E26", 4.60, 15.47),  # P&O Princess -> Carnival plc, 22 April 2003
+        ("SHEL.L", 36.49, 17.665),  # Royal Dutch -> Royal Dutch Shell A, 20 July 2005
+        ("RDSb.L^A22", 5.28, 18.065),  # Shell Transport -> Royal Dutch Shell B, 20 July 2005
+    ],
+)
+def test_a_london_share_exchange_leaves_an_ordinary_days_return(ric: str, before: float, after: float) -> None:
+    # LSEG carries the old company's price on the new line unadjusted: without the exchange ratio the day books
+    # +236 %, -52 % and +242 %; with it, the day's move is the market's (within a few percent)
+    table = read_corrections()
+    ratio = float(table.loc[(table["ric"] == ric) & (table["action_type"] == "split"), "ratio"].iloc[0])
+    assert abs(after / (before / ratio) - 1) < 0.05
+
+
 def test_a_distribution_is_worth_the_parent_and_the_line_handed_out() -> None:
     # Alphabet, 3 April 2014: class A closed at 571.50, the class C handed out (one per share) at 569.74
     ratio = distribution_ratio(571.50, 569.74, 1.0)

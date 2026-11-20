@@ -9,7 +9,7 @@ we hold (whichever vendor recorded the membership), each under the ticker we hol
 1. Tiingo's list of supported tickers (a free file, no allowance used) is landed; a listing whose ticker Tiingo does
    not have, or had only outside the listing's life, is skipped without a request;
 2. per listing one request, from :data:`OVERLAP_DAYS` before its newest Tiingo bar (from :data:`START` the first
-   time) to its last day - landed as it came, then written to ``market.price_bar`` and ``market.corporate_action``;
+   time) to its last day - landed as it came, then written to ``equity.price_bar`` and ``equity.corporate_action``;
 3. where another vendor prices the same listing, the closes of the common days must agree
    (:data:`~equity_research.ingest.vendors.tiingo.normalize.AGREEMENT`): otherwise the ticker is another company's in
    Tiingo and nothing is written (reported as ``disagreed``).
@@ -30,20 +30,20 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import UpsertResult, upsert
-from equity_research.ingest.identity import US_MARKETS
+from equity_research.data import schema
 from equity_research.ingest.vendors.tiingo import VENDOR
 from equity_research.ingest.vendors.tiingo import normalize as norm
 from equity_research.ingest.vendors.tiingo.client import TiingoClient, TiingoThrottledError
-from equity_research.raw.store import land_bytes, land_file, mark, recent_batch
-from equity_research.settings import get_settings
+from research_core.data import ops
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import UpsertResult, upsert
+from research_core.data.identity import US_MARKETS
+from research_core.data.raw_store import land_bytes, land_file, mark, recent_batch
+from research_core.settings import get_settings
 
 log = logging.getLogger(__name__)
 
-START = pd.Timestamp("2005-01-01")
+START = pd.Timestamp("2000-01-01")
 OVERLAP_DAYS = 10  # vendors correct recent days: a top-up asks again for these
 SAMPLE = 20  # tickers listed per kind of problem in the report
 
@@ -53,15 +53,15 @@ def targets(engine: Engine, today: pd.Timestamp) -> pd.DataFrame:
     sql = sa.text(
         """
         SELECT l.listing_id, l.listed_on, l.delisted_on, t.value AS ticker, t.valid_from, t.valid_to
-        FROM ref.listing l
-        JOIN ref.identifier t ON t.entity_type = 'listing' AND t.entity_id = l.listing_id AND t.id_type = 'TICKER'
+        FROM core.listing l
+        JOIN core.identifier t ON t.entity_type = 'listing' AND t.entity_id = l.listing_id AND t.id_type = 'TICKER'
         WHERE l.instrument_type = 'equity'
           AND (l.exchange_mic IN :markets OR l.exchange_mic IS NULL)
-          AND EXISTS (SELECT 1 FROM ref.index_membership m WHERE m.listing_id = l.listing_id)
+          AND EXISTS (SELECT 1 FROM equity.index_membership m WHERE m.listing_id = l.listing_id)
         """
     ).bindparams(sa.bindparam("markets", sorted(US_MARKETS), expanding=True))
     newest_sql = sa.text(
-        "SELECT listing_id, MAX(trade_date) AS newest FROM market.price_bar WHERE vendor_id = :v GROUP BY listing_id"
+        "SELECT listing_id, MAX(trade_date) AS newest FROM equity.price_bar WHERE vendor_id = :v GROUP BY listing_id"
     )
     with engine.connect() as conn:
         rows = pd.DataFrame(

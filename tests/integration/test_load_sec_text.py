@@ -19,10 +19,10 @@ import sqlalchemy as sa
 from conftest import scratch_database
 from sqlalchemy.engine import Engine
 
-from equity_research.ingest.identity import add_identifiers, ensure_listings
 from equity_research.ingest.vendors import sraf
 from equity_research.ingest.vendors.sec.client import SecClient
 from equity_research.pipelines import load_sec_text as pipe
+from research_core.data.identity import add_identifiers, ensure_listings
 
 pytestmark = pytest.mark.integration
 
@@ -141,7 +141,7 @@ def loaded(
                 vendor="refinitiv",
                 batch_id=None,
             )
-            issuers = conn.execute(sa.text("SELECT issuer_id, name FROM ref.issuer")).all()
+            issuers = conn.execute(sa.text("SELECT issuer_id, name FROM core.issuer")).all()
             by_name = {str(n): int(i) for i, n in issuers}
             add_identifiers(
                 conn,
@@ -181,7 +181,7 @@ def _frame(engine: Engine, sql: str) -> pd.DataFrame:
 def test_documents_come_with_their_acceptance_instant_and_items(loaded: Any) -> None:
     engine, _, first, _ = loaded
     docs = _frame(
-        engine, "SELECT filing_ref, form, published_at, items, batch_id FROM fund.document ORDER BY filing_ref"
+        engine, "SELECT filing_ref, form, published_at, items, batch_id FROM equity.document ORDER BY filing_ref"
     )
     assert list(docs["form"]) == ["10-K", "10-K", "10-K", "10-K", "8-K"]  # the combined report under both companies
     assert docs.set_index("filing_ref").loc["0001001-24-000003", "items"] == "5.02,9.01"
@@ -195,9 +195,9 @@ def test_documents_come_with_their_acceptance_instant_and_items(loaded: Any) -> 
 def test_each_report_is_measured_and_compared_with_the_year_before(loaded: Any) -> None:
     engine, *_ = loaded
     every = _frame(
-        engine, "SELECT issuer_id, filing_ref, section, measure, method, value, batch_id FROM fund.text_measure"
+        engine, "SELECT issuer_id, filing_ref, section, measure, method, value, batch_id FROM equity.text_measure"
     )
-    alpha = _frame(engine, "SELECT issuer_id FROM ref.issuer WHERE name = 'Alpha Inc'")["issuer_id"].iloc[0]
+    alpha = _frame(engine, "SELECT issuer_id FROM core.issuer WHERE name = 'Alpha Inc'")["issuer_id"].iloc[0]
     m = every[every["issuer_id"] == alpha]
     neg = m[(m["section"] == "risk") & (m["measure"] == "negative")].set_index("filing_ref")["value"]
     assert neg.to_dict() == {"0001001-23-000001": 100.0, "0001001-24-000002": 0.0}
@@ -225,7 +225,7 @@ def test_a_combined_report_is_measured_for_both_companies(loaded: Any) -> None:
     engine, *_ = loaded
     m = _frame(
         engine,
-        "SELECT i.name, t.value FROM fund.text_measure t JOIN ref.issuer i ON i.issuer_id = t.issuer_id"
+        "SELECT i.name, t.value FROM equity.text_measure t JOIN core.issuer i ON i.issuer_id = t.issuer_id"
         " WHERE t.filing_ref = '0001001-24-000002' AND t.section = 'risk' AND t.measure = 'negative'",
     )
     assert dict(zip(m["name"], m["value"], strict=True)) == {"Alpha Inc": 0.0, "Gamma Inc": 0.0}
@@ -233,7 +233,7 @@ def test_a_combined_report_is_measured_for_both_companies(loaded: Any) -> None:
 
 def test_raw_reports_are_edgars_bytes_compressed(loaded: Any, tmp_path: Path) -> None:
     engine, *_ = loaded
-    from equity_research.settings import get_settings  # noqa: PLC0415
+    from research_core.settings import get_settings  # noqa: PLC0415
 
     path = _frame(engine, f"SELECT raw_path FROM ingest.batch WHERE dataset = '{pipe.ANNUAL_DATASET}'")["raw_path"]
     assert len(path) == 2

@@ -5,7 +5,7 @@ Steps:
 1. **Indexes** - land each CIK's EDGAR submissions index (and the older pages it points to) as raw batches; an index
    is fetched again when the landed one is older than ``max_age_days``, an older page never (it lists only filings
    long past).
-2. **Documents** - ``fund.document``: every 10-K, 10-Q and 8-K (amendments too) filed since ``since``, with the
+2. **Documents** - ``equity.document``: every 10-K, 10-Q and 8-K (amendments too) filed since ``since``, with the
    instant EDGAR accepted it and an 8-K's item codes; each row names the index batch it came from.
 3. **Annual reports** - land the primary document of every original annual report (10-K, 10-K405, 10-KT) since
    ``since``, gzip-compressed (the bytes are EDGAR's, unchanged once decompressed) - a few threads share the SEC's
@@ -15,7 +15,7 @@ Steps:
    hours of downloading do no database work, so a serverless database can pause through them (its free compute is
    counted by the second), and a run that stops lands what it downloaded next time.
 4. **Dictionary** - land the Loughran-McDonald master dictionary (vendor ``sraf``) when none is landed.
-5. **Measures** - ``fund.text_measure``: for each annual report, the word counts of each Loughran-McDonald category
+5. **Measures** - ``equity.text_measure``: for each annual report, the word counts of each Loughran-McDonald category
    in the whole report, its MD&A and its risk factors, and the similarity of each to the company's previous annual
    report (within :data:`PREVIOUS_DAYS`). Companies are measured in parallel processes; a company with a report not
    yet measured is measured again in full (its similarities need the report before).
@@ -42,17 +42,18 @@ import requests
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.engine import wake
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import UpsertResult, upsert
+from equity_research.data import schema
 from equity_research.ingest.vendors import sraf
 from equity_research.ingest.vendors.sec import VENDOR, text
 from equity_research.ingest.vendors.sec import documents as docs
 from equity_research.ingest.vendors.sec.client import SUBMISSIONS_PAGE_URL, SUBMISSIONS_URL, SecClient
-from equity_research.raw.store import Batch, get_batch, land_bytes, land_file, mark
-from equity_research.settings import get_settings
+from research_core.data import ops
+from research_core.data.db import schema as core_schema
+from research_core.data.db.engine import wake
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import UpsertResult, upsert
+from research_core.data.raw_store import Batch, get_batch, land_bytes, land_file, mark
+from research_core.settings import get_settings
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ PREVIOUS_DAYS = 550
 
 def issuer_ciks(conn: Connection, issuers: Sequence[int] | None = None) -> pd.DataFrame:
     """``issuer_id``, ``cik`` of every company with a CIK (or of ``issuers`` only)."""
-    i = schema.identifier
+    i = core_schema.identifier
     query = sa.select(i.c.entity_id.label("issuer_id"), i.c.value.label("cik")).where(
         i.c.entity_type == "issuer", i.c.id_type == "CIK"
     )
@@ -81,7 +82,7 @@ def issuer_ciks(conn: Connection, issuers: Sequence[int] | None = None) -> pd.Da
 
 def landed(conn: Connection, dataset: str, vendor: str = VENDOR) -> pd.DataFrame:
     """The latest batch per request (``source``) of a dataset: ``batch_id``, ``fetched_at``, ``raw_path`` by source."""
-    b = schema.batch
+    b = core_schema.batch
     rows = conn.execute(
         sa.select(b.c.source, b.c.batch_id, b.c.fetched_at, b.c.raw_path).where(
             b.c.vendor_id == vendor_id(vendor), b.c.dataset == dataset
@@ -210,7 +211,7 @@ def _land_staged(engine: Engine, staged: dict[str, Path], dataset: str) -> dict[
 def load_documents(
     engine: Engine, links: pd.DataFrame, indexes: dict[int, list[Batch]], *, since: str = "2003-01-01"
 ) -> UpsertResult:
-    """``fund.document`` rows of every company from its CIKs' indexes, ``ISSUERS_PER_TRANSACTION`` at a time."""
+    """``equity.document`` rows of every company from its CIKs' indexes, ``ISSUERS_PER_TRANSACTION`` at a time."""
     total = UpsertResult()
     by_issuer = {int(str(i)): [int(c) for c in g["cik"]] for i, g in links.groupby("issuer_id")}
     companies = sorted(by_issuer)
@@ -352,7 +353,7 @@ def measure_reports(
     issuers: Sequence[int] | None = None,
     workers: int | None = None,
 ) -> UpsertResult:
-    """``fund.text_measure`` for every landed annual report of a company with one not yet measured."""
+    """``equity.text_measure`` for every landed annual report of a company with one not yet measured."""
     raw_dir = get_settings().raw_dir
     with engine.connect() as conn:
         reports = _annual_documents(conn, since, issuers)

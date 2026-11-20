@@ -1,26 +1,53 @@
-# EquityResearch - working notes for Claude
+# QuantResearch - working notes for Claude
 
 Read `docs/ARCHITECTURE.md` (the design and its rules) and `CONTRIBUTING.md` (the working rules) before changing
 code. This file adds what a session needs to work here safely. Machine-learning work follows `docs/ML4T_PLAN.md`
 (phases, compatibility rules, progress): read it first and keep its boxes and log current.
 
+## Packages
+
+* Three packages under `src/`: `research_core` (shared: storage, the backtest engine, analytics - imports no
+  asset-class package), `equity_research` (everything about shares - imports `research_core` only) and
+  `fixed_income_research` (bond indices from ICE's constituent files; command `fir`). Asset-class packages
+  never import one another;
+  `equity_research/research/` is for the notebooks only. `tests/unit/test_dependency_rules.py` enforces it.
+* The database is laid out as the packages are: `research_core` owns the schemas `core` (asset classes, vendors,
+  instrument and identifier types, issuers, listings, identifiers), `ingest`, `ops` and `research` (runs and rule
+  sets, each naming its `asset_class`); each asset class owns one schema named after it (`equity`, `fixed_income`)
+  and registers its schema module under the entry point `research_core.asset_classes` (`pyproject.toml`). A new
+  table goes in its owner's schema; a new asset class adds a package, a schema, and its rows in `core.asset_class`,
+  `core.instrument_type`, `core.id_type` - never a column on a shared table. `tests/unit/test_database_layout.py` and
+  `tests/integration/test_migrations.py` enforce it (docs/ARCHITECTURE.md section 3).
+* Equity notebooks are under `notebooks/equity/`, fixed income ones under `notebooks/fixed_income/`, numbered
+  folder.position; each says what it needs and produces.
+* Fixed income: month-end files `<index>-<MMDDYYYY>.xlsx` in the folder `EQR_ICE_DIR`, loaded by `fir load-ice`
+  (new files only, any order). The file of a month end is the index after its rebalance: next month's weights,
+  the past month's returns; a bond that left has no return for its last month. Each asset class's research cache
+  and artifacts have their own folder: `data/<db>/cache/<asset class>/`, `data/<db>/research/<asset class>/`.
+* The repository was called EquityResearch until November 2026 (the `EQR_*` settings, the keyring service
+  `equity_research` and the `eqr` command keep their names).
+* Migrations: one history from `0001` in `migrations/versions` (started 2026-11-15 with the multi-asset layout).
+  The first history (0001-0011, schemas `ref` / `market` / `fund`) is kept in `migrations/legacy_equity_research`
+  and never run: `equity_research_local` and Azure's `equity_research` are on it, and the code no longer reads them.
+
 ## Environment
 
-* Windows, Git Bash and PowerShell. Python 3.13 via `uv`; run tools from `.venv/Scripts/` (`.venv/Scripts/python`,
+* Windows, Git Bash and PowerShell. Python 3.13 or later via `uv` (this machine's venv runs 3.14); run tools from `.venv/Scripts/` (`.venv/Scripts/python`,
   `.venv/Scripts/eqr`, `.venv/Scripts/ruff`, `.venv/Scripts/mypy`) - the shell's `VIRTUAL_ENV` may point at another
   project.
-* Databases: the shared **Azure** database `equity_research` is the working database (since 2026-10-30, a verified
-  copy of `equity_research_local`): with no `EQR_DB_SERVER` set - the default, `.env` included - research,
-  refreshes and the run registry use it, with its data folder `data/equity_research/`. It is serverless: the first
-  connection after a pause waits up to a minute while it resumes.
+* Databases: the working database is the local `quant_research_local` (new history, built from the vendors from
+  2026-11-15; `.env` names it), data folder `data/quant_research_local/`. The shared **Azure** database
+  `equity_research` (with no `EQR_DB_SERVER` set) is still on the old layout: it is to be replaced by a copy of
+  `quant_research_local` (`eqr copy-database` into an empty database on the new history) - confirm with the user
+  first. It is serverless: the first connection after a pause waits up to a minute while it resumes.
 * A local SQL Server Express `MENONPC\SQLEXPRESS` (Windows authentication), chosen by
   `EQR_DB_SERVER='MENONPC\SQLEXPRESS' EQR_DB_NAME=<name>`, is for what must not touch Azure first: integration tests
   (they create and drop scratch databases - never on Azure), new loaders and trial builds, verified there before
-  they reach Azure. `equity_research_gate` is an empty, migrated database the integration tests run in (their
+  they reach Azure. `quant_research_gate` is an empty, migrated database the integration tests run in (their
   own scratch databases have fixed names - `equity_research_test*` - and are dropped after: never give a database
-  one of those names). `equity_research_local` and `equity_research_norgate` were no longer on the server on
-  2026-10-30; Azure holds the verified copy. Confirm before anything destructive on Azure (emptying a table, a
-  migration that rewrites data, a rebuild).
+  one of those names). `equity_research_local` (old layout, migration 0011, rebuilt 2026-11-12) is kept unchanged
+  at the user's request: never migrate, empty or drop it. Confirm before anything destructive on Azure (emptying a
+  table, a migration that rewrites data, a rebuild).
 * Secrets live in the OS keyring (service `equity_research`): never in files, never printed, never in a URL. Vendor
   keys: `eqr set-key tiingo|simfin`.
 * Each database has its own data folder `data/<db name>/` (raw zone + research cache); `data/` is not in git.
@@ -30,7 +57,7 @@ code. This file adds what a session needs to work here safely. Machine-learning 
 ```sh
 .venv/Scripts/ruff format . && .venv/Scripts/ruff check . && .venv/Scripts/mypy        # mypy covers src and tests
 .venv/Scripts/python -m pytest -q                                                          # unit: no database, no network
-EQR_DB_SERVER='MENONPC\SQLEXPRESS' EQR_DB_NAME=equity_research_gate EQR_SEC_USER_AGENT="t t@example.com" \
+EQR_DB_SERVER='MENONPC\SQLEXPRESS' EQR_DB_NAME=quant_research_gate EQR_SEC_USER_AGENT="t t@example.com" \
   .venv/Scripts/python -m pytest -q -m integration                                         # scratch databases, dropped after
 ```
 
@@ -50,13 +77,16 @@ Data checks: `eqr checks` (the gates) and `eqr audit` (every architecture rule a
 * **LSEG** (Workspace on this PC): 10,000 requests and 5 GB a day, reset at midnight local time; check with
   `GET http://localhost:9000/api/throttling/limits`. `get_history` costs one request **per RIC** and returns up to
   ~3,000 days, so prices go in 11-year windows; `get_data` costs one per call. lseg-data cannot build a history mixing
-  index levels (no volume) with stocks - levels are asked apart. A full build is ~7,550 requests; loads resume.
+  index levels (no volume) with stocks - levels are asked apart. Builds start on 2000-01-01 (prices from 1998, a year
+  before for momentum): three price windows per RIC; a full build takes three to four days of the allowance; loads
+  resume. Everything answers from 2000, but LSEG's S&P 400 history begins 2001-07-20 and its S&P 600's 2001-01-16
+  (every member "joins" that day): before then the S&P 1500 is the S&P 500 alone - start S&P 1500 research in 2002.
   A refresh asks its prices by `get_data` (`TR.PriceClose`, unadjusted: one request per 50 RICs, equal to the
   histories bar for bar) and starts on the first of a month, so a rerun the same day reads back what it landed;
   a daily refresh costs ~1,050 requests, most of them the fixed actions / shares / statements / yearly-items
   buckets.
   Its statement share counts (`TR.F.ComShrOutsTot`) are restated to today's share basis; research values listings
-  from their own counts (`market.share_count`, never restated).
+  from their own counts (`equity.share_count`, never restated).
   I/B/E/S estimates (`eqr load-estimates`): per-share history is restated to today's shares too (the loader stores it
   in the shares of its own date). Never ask the revision counts (`TR.NumEstRevisingUp`/`Down`) as a history
   (`EDate`/`Frq`): no answer comes and lseg-data re-sends the request at a request each (~1,000 lost on 2026-10-30);

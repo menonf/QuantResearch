@@ -5,11 +5,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research.cache import ResearchCache
-from equity_research.research.data import UniverseData
-from equity_research.research.garp import GarpConfig
-from equity_research.research.runs import Snapshot
-from equity_research.research.screen import screen, strategy_screen
+from equity_research.analytics.screen import screen, strategy_screen
+from equity_research.data.cache import ResearchCache
+from equity_research.data.universe import UniverseData
+from equity_research.strategies.garp import GarpConfig
+from equity_research.strategies.runs import Snapshot
 
 
 class _Cache:
@@ -17,7 +17,7 @@ class _Cache:
 
     def query(self, sql: str, params: Sequence[object] | None = None) -> pd.DataFrame:
         ids = range(1, 31)
-        if "ref.identifier" in sql:
+        if "core.identifier" in sql:
             return pd.DataFrame({"listing_id": list(ids), "value": [f"T{i}.N" for i in ids]})
         return pd.DataFrame({"listing_id": list(ids), "name": [f"Company {i}" for i in ids]})
 

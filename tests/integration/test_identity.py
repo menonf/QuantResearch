@@ -3,7 +3,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 
-from equity_research.ingest.identity import (
+from research_core.data.identity import (
     US_MARKETS,
     add_identifiers,
     anchor_map,
@@ -51,7 +51,7 @@ def test_listings_are_created_once_and_share_an_issuer(conn: Connection) -> None
     assert again.listing_ids == first.listing_ids
     assert anchor_map(conn, "issuer", "CUSIP")["TST001"] > 0
     name = conn.exec_driver_sql(
-        "SELECT name FROM ref.listing WHERE listing_id = ?", (first.listing_ids["T1"],)
+        "SELECT name FROM core.listing WHERE listing_id = ?", (first.listing_ids["T1"],)
     ).scalar()
     assert name == "A2"  # attributes follow the source
 
@@ -71,7 +71,7 @@ def test_an_identifier_held_by_another_entity_is_reported_not_reassigned(conn: C
     assert add_identifiers(conn, pd.DataFrame([{**row, "entity_id": ids.listing_ids["T1"]}]), batch_id=None).empty
     conflicts = add_identifiers(conn, pd.DataFrame([{**row, "entity_id": ids.listing_ids["T2"]}]), batch_id=None)
     assert len(conflicts) == 1 and conflicts.loc[0, "held_by"] == ids.listing_ids["T1"]
-    held = conn.exec_driver_sql("SELECT entity_id FROM ref.identifier WHERE value = 'US0000TEST01'").scalars().all()
+    held = conn.exec_driver_sql("SELECT entity_id FROM core.identifier WHERE value = 'US0000TEST01'").scalars().all()
     assert held == [ids.listing_ids["T1"]]
 
 
@@ -83,17 +83,17 @@ def test_merging_issuers_moves_listings_identifiers_and_filings(conn: Connection
     issuers = anchor_map(conn, "issuer", "CUSIP")
     a, b = issuers["TST001"], issuers["TST002"]
     filing = (
-        "INSERT INTO fund.filing (issuer_id, vendor_id, filing_ref, form, period_end, published_at) "
+        "INSERT INTO equity.filing (issuer_id, vendor_id, filing_ref, form, period_end, published_at) "
         "VALUES (?, 1, ?, 'announcement', '2024-03-31', '2024-04-25')"
     )
     conn.exec_driver_sql(filing, (a, "announcement:2024-03-31"))
     conn.exec_driver_sql(filing, (b, "announcement:2024-03-31"))  # the same filing on both: a duplicate after the merge
     conn.exec_driver_sql(filing, (b, "announcement:2024-06-30"))
-    conn.exec_driver_sql("UPDATE fund.filing SET loaded_at = '2000-01-01' WHERE issuer_id = ?", (b,))
+    conn.exec_driver_sql("UPDATE equity.filing SET loaded_at = '2000-01-01' WHERE issuer_id = ?", (b,))
     merge_issuers(conn, a, [b])
     listing_issuers = (
         conn.execute(
-            sa.text("SELECT issuer_id FROM ref.listing WHERE listing_id IN :ids").bindparams(
+            sa.text("SELECT issuer_id FROM core.listing WHERE listing_id IN :ids").bindparams(
                 sa.bindparam("ids", expanding=True)
             ),
             {"ids": [ids.listing_ids["T1"], ids.listing_ids["T2"]]},
@@ -103,15 +103,15 @@ def test_merging_issuers_moves_listings_identifiers_and_filings(conn: Connection
     )
     assert set(listing_issuers) == {a}
     refs = (
-        conn.exec_driver_sql("SELECT filing_ref FROM fund.filing WHERE issuer_id = ? ORDER BY filing_ref", (a,))
+        conn.exec_driver_sql("SELECT filing_ref FROM equity.filing WHERE issuer_id = ? ORDER BY filing_ref", (a,))
         .scalars()
         .all()
     )
     assert refs == ["announcement:2024-03-31", "announcement:2024-06-30"]
     assert anchor_map(conn, "issuer", "CUSIP")["TST002"] == a  # the identifier moved too
-    assert conn.exec_driver_sql("SELECT COUNT(*) FROM ref.issuer WHERE issuer_id = ?", (b,)).scalar() == 0
+    assert conn.exec_driver_sql("SELECT COUNT(*) FROM core.issuer WHERE issuer_id = ?", (b,)).scalar() == 0
     moved = conn.exec_driver_sql(
-        "SELECT loaded_at FROM fund.filing WHERE filing_ref = 'announcement:2024-06-30' AND issuer_id = ?", (a,)
+        "SELECT loaded_at FROM equity.filing WHERE filing_ref = 'announcement:2024-06-30' AND issuer_id = ?", (a,)
     ).scalar()
     assert moved is not None and moved.year > 2000  # stamped, so an incremental cache sync picks the move up
 
@@ -122,19 +122,19 @@ def test_merging_listings_keeps_one_price_per_day_and_moves_codes(conn: Connecti
     )
     ids = ensure_listings(conn, frame, anchor_type="RIC", issuer_anchor_type="CUSIP", vendor="refinitiv", batch_id=None)
     new, old = ids.listing_ids["NEW.N"], ids.listing_ids["OLD.N^A20"]
-    bar = "INSERT INTO market.price_bar (listing_id, vendor_id, trade_date, [close]) VALUES (?, 1, ?, ?)"
+    bar = "INSERT INTO equity.price_bar (listing_id, vendor_id, trade_date, [close]) VALUES (?, 1, ?, ?)"
     conn.exec_driver_sql(bar, (old, "2020-01-02", 9.0))
     conn.exec_driver_sql(bar, (old, "2020-01-03", 9.5))  # both RICs priced this day
     conn.exec_driver_sql(bar, (new, "2020-01-03", 10.0))
     conn.exec_driver_sql(bar, (new, "2020-01-06", 10.5))
     merge_listings(conn, new, [old])
     closes = conn.exec_driver_sql(
-        "SELECT CONVERT(VARCHAR(10), trade_date, 23), [close] FROM market.price_bar WHERE listing_id = ? ORDER BY 1",
+        "SELECT CONVERT(VARCHAR(10), trade_date, 23), [close] FROM equity.price_bar WHERE listing_id = ? ORDER BY 1",
         (new,),
     ).all()
     assert [tuple(r) for r in closes] == [("2020-01-02", 9.0), ("2020-01-03", 10.0), ("2020-01-06", 10.5)]
     assert anchor_map(conn, "listing", "RIC")["OLD.N^A20"] == new  # the old code now names the line
-    assert conn.exec_driver_sql("SELECT COUNT(*) FROM ref.listing WHERE listing_id = ?", (old,)).scalar() == 0
+    assert conn.exec_driver_sql("SELECT COUNT(*) FROM core.listing WHERE listing_id = ?", (old,)).scalar() == 0
 
 
 def test_a_vendors_securities_match_by_isin_then_ticker_on_the_day(conn: Connection) -> None:
@@ -154,7 +154,7 @@ def test_a_vendors_securities_match_by_isin_then_ticker_on_the_day(conn: Connect
     )
     add_identifiers(conn, codes, batch_id=None)
     conn.exec_driver_sql(  # one ticker, two listings on the same day: a person must decide
-        "INSERT INTO ref.identifier (entity_type, entity_id, id_type, value, valid_from, vendor_id) "
+        "INSERT INTO core.identifier (entity_type, entity_id, id_type, value, valid_from, vendor_id) "
         "VALUES ('listing', ?, 'TICKER', 'TSTY', '1900-01-02', 1)",
         (a,),
     )
@@ -205,7 +205,7 @@ def test_a_ticker_matches_only_listings_on_the_vendors_markets(conn: Connection)
         batch_id=None,
     )
     held = conn.execute(
-        sa.text("SELECT market FROM ref.identifier WHERE id_type = 'TICKER' AND value = 'TSTAAL' ORDER BY market")
+        sa.text("SELECT market FROM core.identifier WHERE id_type = 'TICKER' AND value = 'TSTAAL' ORDER BY market")
     ).scalars()
     assert list(held) == ["GB", "US"]
     asked = pd.DataFrame({"key": ["aal", "ba"], "TICKER": ["TSTAAL", "TSTBA"]})
@@ -214,3 +214,20 @@ def test_a_ticker_matches_only_listings_on_the_vendors_markets(conn: Connection)
     assert missing(us_vendor.loc["ba", "listing_id"]) and not us_vendor.loc["ba", "ambiguous"]  # no US share of it
     anywhere = match_listings(conn, asked, markets=None).set_index("key")
     assert anywhere.loc["aal", "ambiguous"] and anywhere.loc["ba", "listing_id"] == uk_only
+
+
+def test_a_call_that_cannot_name_the_company_keeps_the_one_the_listing_has(conn: Connection) -> None:
+    # LSEG names most US companies by CUSIP and those registered abroad by an ISIN, in a second call: the first call,
+    # which has no CUSIP for them, must not set their company to NULL only for the second to set it back
+    first = ensure_listings(
+        conn, _frame(), anchor_type="RIC", issuer_anchor_type="CUSIP", vendor="refinitiv", batch_id=None
+    )
+    issuer = conn.exec_driver_sql(
+        "SELECT issuer_id FROM core.listing WHERE listing_id = ?", (first.listing_ids["T1"],)
+    ).scalar()
+    unnamed = _frame().assign(issuer_anchor=None, issuer_name=None, name=["A2", "B", "Test Index"])
+    ensure_listings(conn, unnamed, anchor_type="RIC", issuer_anchor_type="CUSIP", vendor="refinitiv", batch_id=None)
+    after = conn.exec_driver_sql(
+        "SELECT issuer_id, name FROM core.listing WHERE listing_id = ?", (first.listing_ids["T1"],)
+    ).one()
+    assert tuple(after) == (issuer, "A2")  # the company kept, the other attributes still follow the source

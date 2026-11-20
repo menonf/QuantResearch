@@ -13,7 +13,7 @@ from typing import Any
 
 import pandas as pd
 
-from equity_research.db.schema import DOCUMENT_FORMS
+from equity_research.data.schema import DOCUMENT_FORMS
 
 #: Original annual reports - the documents whose text is measured (an amendment often restates a part only).
 ANNUAL_FORMS = ("10-K", "10-K405", "10-KT")

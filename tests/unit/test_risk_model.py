@@ -5,9 +5,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import portfolio_risk as pr
-from equity_research.research import risk_model as rm
-from equity_research.research import risk_styles as rs
+from equity_research.analytics.risk import portfolio_risk as pr
+from equity_research.analytics.risk import risk_model as rm
+from equity_research.analytics.risk import risk_styles as rs
+from research_core.analytics.risk import statistics as risk_stats
 
 DAYS = pd.bdate_range("2015-01-01", "2019-12-31")
 
@@ -238,12 +239,12 @@ def test_two_listings_of_one_company_share_their_specific_risk(model: rm.RiskMod
 def test_forecast_tests_and_kupiec() -> None:
     rng = np.random.default_rng(11)
     z = pd.Series(rng.normal(size=2000))
-    bias, lo, hi = pr.bias_statistic(z)
+    bias, lo, hi = risk_stats.bias_statistic(z)
     assert lo < bias < hi
-    assert pr.q_statistic(z) < pr.q_statistic(z * 2)  # forecasts half the true volatility score worse
-    lr, p = pr.kupiec(10, 1000, 0.01)
+    assert risk_stats.q_statistic(z) < risk_stats.q_statistic(z * 2)  # forecasts half the true volatility score worse
+    lr, p = risk_stats.kupiec(10, 1000, 0.01)
     assert lr == pytest.approx(0.0, abs=1e-9) and p == pytest.approx(1.0)
-    assert pr.kupiec(30, 1000, 0.01)[1] < 0.001
+    assert risk_stats.kupiec(30, 1000, 0.01)[1] < 0.001
 
 
 def test_forward_returns_buy_and_hold() -> None:
@@ -260,7 +261,7 @@ def test_var_backtest_holds_the_latest_weights_and_counts_exceptions(model: rm.R
     returns.iloc[:] = -0.5  # every day a crash: every VaR is exceeded
     bt = pr.var_backtest(model, weights, returns)
     assert len(bt) == len(model.dates) - 1 and bt["exception"].all()
-    summary = pr.kupiec_summary({"crash": bt})
+    summary = risk_stats.kupiec_summary({"crash": bt})
     row = summary.loc["crash"].to_dict()
     assert row["exceptions"] == len(bt) and float(row["p_value"]) < 1e-6
 
@@ -271,7 +272,7 @@ def test_stock_z_scores_are_near_one_when_the_model_is_right(model: rm.RiskModel
     returns = pd.DataFrame(rng.normal(0, 0.02, (len(DAYS), len(ids))), index=DAYS, columns=ids)
     z = pr.stock_z_scores(model, returns, model.dates[-6:-1], version="1.0")
     assert z.index.names == ["date", "listing_id"] and len(z) == 5 * len(ids)
-    assert pr.bias_statistic(z)[0] == pytest.approx(1.0, abs=0.15)
+    assert risk_stats.bias_statistic(z)[0] == pytest.approx(1.0, abs=0.15)
 
 
 def test_a_factor_summary_and_significance() -> None:
@@ -319,13 +320,13 @@ def test_implied_moves_follow_the_correlations() -> None:
     vol = np.array([0.01, 0.004, 0.002])
     corr = np.array([[1.0, 0.8, 0.0], [0.8, 1.0, 0.0], [0.0, 0.0, 1.0]])
     cov = pd.DataFrame(corr * np.outer(vol, vol), index=names, columns=names)
-    moves = pr.implied_moves(cov, {rm.MARKET: -0.10})
+    moves = risk_stats.implied_moves(cov, {rm.MARKET: -0.10})
     assert moves[rm.MARKET] == -0.10
     assert moves["Volatility"] == pytest.approx(0.8 * 0.004 / 0.01 * -0.10)  # beta of volatility to the market
     assert moves["Value"] == pytest.approx(0.0)
-    assert (pr.implied_moves(cov * 7, {rm.MARKET: -0.10}) - moves).abs().max() < 1e-12  # the scale cancels
+    assert (risk_stats.implied_moves(cov * 7, {rm.MARKET: -0.10}) - moves).abs().max() < 1e-12  # the scale cancels
     with pytest.raises(KeyError):
-        pr.implied_moves(cov, {"Nonsense": 0.1})
+        risk_stats.implied_moves(cov, {"Nonsense": 0.1})
 
 
 def test_a_stress_test_isolated_and_with_correlations(model: rm.RiskModel) -> None:
@@ -337,7 +338,7 @@ def test_a_stress_test_isolated_and_with_correlations(model: rm.RiskModel) -> No
     x = result.table["exposure"]
     assert result.isolated == pytest.approx(x[rm.MARKET] * -0.10)
     assert result.table["isolated P&L"].drop(rm.MARKET).abs().max() == 0.0
-    expected = x @ pr.implied_moves(model.on(day)[1], shock)
+    expected = x @ risk_stats.implied_moves(model.on(day)[1], shock)
     assert result.correlated == pytest.approx(expected)
     assert result.correlated == pytest.approx(result.table["correlated P&L"].sum())
     assert pr.stress_test(model, weights, day, shock, benchmark=weights).correlated == 0.0

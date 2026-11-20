@@ -3,8 +3,8 @@ from typing import cast
 
 import pandas as pd
 
-from equity_research.research.cache import ResearchCache
-from equity_research.research.classification import classification_on
+from equity_research.data.cache import ResearchCache
+from equity_research.data.sectors import classification_on
 
 ROWS = pd.DataFrame(
     {

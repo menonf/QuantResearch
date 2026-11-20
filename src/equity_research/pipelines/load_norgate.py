@@ -25,13 +25,20 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import UpsertResult, upsert
+from equity_research.data import schema
 from equity_research.ingest.classification import record as record_classification
 from equity_research.ingest.countries import country_code
-from equity_research.ingest.identity import (
+from equity_research.ingest.membership import close_at_delisting
+from equity_research.ingest.reference import INDEXES as REFERENCE_INDEXES
+from equity_research.ingest.reference import write_reference
+from equity_research.ingest.vendors.norgate import VENDOR
+from equity_research.ingest.vendors.norgate import normalize as norm
+from equity_research.ingest.vendors.norgate.client import INDEXES, NorgateClient
+from research_core.data import ops
+from research_core.data.db import schema as core_schema
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import UpsertResult, upsert
+from research_core.data.identity import (
     OPEN_START,
     US_MARKETS,
     add_identifiers,
@@ -39,17 +46,11 @@ from equity_research.ingest.identity import (
     ensure_listings,
     match_listings,
 )
-from equity_research.ingest.membership import close_at_delisting
-from equity_research.ingest.reference import INDEXES as REFERENCE_INDEXES
-from equity_research.ingest.reference import write_reference
-from equity_research.ingest.vendors.norgate import VENDOR
-from equity_research.ingest.vendors.norgate import normalize as norm
-from equity_research.ingest.vendors.norgate.client import INDEXES, NorgateClient
-from equity_research.raw.store import land_frame, mark
+from research_core.data.raw_store import land_frame, mark
 
 log = logging.getLogger(__name__)
 
-START = "2005-01-01"
+START = "2000-01-01"
 TIE_DAYS = 45  # a delisted symbol's month and our listing's last day may differ by this much and still match
 
 
@@ -217,8 +218,8 @@ class NorgateLoad:
         rows = (
             conn.execute(
                 sa.text(
-                    "SELECT DISTINCT l.listing_id FROM ref.identifier i "
-                    "JOIN ref.listing l ON l.listing_id = i.entity_id "
+                    "SELECT DISTINCT l.listing_id FROM core.identifier i "
+                    "JOIN core.listing l ON l.listing_id = i.entity_id "
                     "WHERE i.entity_type = 'listing' AND i.id_type = 'TICKER' AND i.value = :t "
                     "AND l.delisted_on BETWEEN :lo AND :hi "
                     "AND (l.exchange_mic IN :markets OR l.exchange_mic IS NULL)"
@@ -294,7 +295,9 @@ class NorgateLoad:
     def _describe_companies(
         self, conn: Connection, described: pd.DataFrame, batch_id: int, report: dict[str, Any]
     ) -> None:
-        issuer_of = dict(conn.execute(sa.select(schema.listing.c.listing_id, schema.listing.c.issuer_id)).all())
+        issuer_of = dict(
+            conn.execute(sa.select(core_schema.listing.c.listing_id, core_schema.listing.c.issuer_id)).all()
+        )
         companies = described.assign(issuer_id=described["listing_id"].map(issuer_of)).dropna(subset=["issuer_id"])
         companies = companies.drop_duplicates("issuer_id")
         recorded = record_classification(
@@ -311,14 +314,14 @@ class NorgateLoad:
         empty = {
             int(i)
             for i in conn.execute(
-                sa.select(schema.issuer.c.issuer_id).where(schema.issuer.c.domicile_country.is_(None))
+                sa.select(core_schema.issuer.c.issuer_id).where(core_schema.issuer.c.domicile_country.is_(None))
             ).scalars()
         }
         homes = homes[homes["issuer_id"].astype(int).isin(empty)]  # a source that has it is not overwritten
         report["domiciles"] = (
             upsert(
                 conn,
-                schema.issuer,
+                core_schema.issuer,
                 homes[["issuer_id", "domicile_country"]].astype({"issuer_id": int}),
                 key=["issuer_id"],
             ).updated

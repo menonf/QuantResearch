@@ -5,8 +5,8 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from equity_research import ops
-from equity_research.raw.store import get_batch, land_frame, prune, read_frame
+from research_core.data import ops
+from research_core.data.raw_store import get_batch, land_frame, prune, read_frame
 
 pytestmark = pytest.mark.integration
 

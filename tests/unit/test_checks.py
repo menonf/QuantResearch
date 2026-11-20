@@ -1,6 +1,6 @@
 import pytest
 
-from equity_research.quality.checks import Check, CheckResult, GateFailedError, gate
+from research_core.data.quality import Check, CheckResult, GateFailedError, gate
 
 
 def test_thresholds_in_both_directions() -> None:

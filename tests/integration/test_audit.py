@@ -45,9 +45,9 @@ def test_a_share_counted_twice_in_an_index_is_found(built: Engine) -> None:
     with built.begin() as c:
         c.execute(
             sa.text(
-                "INSERT INTO ref.index_membership (index_id, listing_id, start_date, end_date, vendor_id, batch_id) "
+                "INSERT INTO equity.index_membership (index_id, listing_id, start_date, end_date, vendor_id, batch_id) "
                 "SELECT TOP 1 index_id, listing_id, DATEADD(day, 5, start_date), NULL, vendor_id, batch_id "
-                "FROM ref.index_membership"
+                "FROM equity.index_membership"
             )
         )
     findings = audit(built).set_index("rule")

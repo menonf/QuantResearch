@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import barings_estimates as be
+from equity_research.strategies import barings_estimates as be
 
 DAY = pd.Timestamp("2015-06-30")
 DATES = pd.DatetimeIndex([DAY])

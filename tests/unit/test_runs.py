@@ -1,14 +1,14 @@
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import cast
 
 import pandas as pd
 import pytest
 
-from equity_research.research.barings_garp import BaringsGarpConfig
-from equity_research.research.garp import GarpConfig
-from equity_research.research.runs import choose_run, config_from, one_universe
-from equity_research.research.strategy import StrategyConfig
+from equity_research.strategies.barings_garp import BaringsGarpConfig
+from equity_research.strategies.factor_strategy import StrategyConfig
+from equity_research.strategies.garp import GarpConfig
+from equity_research.strategies.runs import choose_run, config_from, matching_run, newest_by_score, one_universe
 
 VENDORS = {"price_vendors": ("refinitiv",), "fundamentals_vendor": ("sec", "refinitiv")}
 
@@ -68,3 +68,32 @@ def test_books_compared_side_by_side_share_a_universe() -> None:
     assert one_universe([sp500, GarpConfig(**VENDORS)]) == "SP500"  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="different universes"):
         one_universe([sp500, StrategyConfig(family="b", universe="SP1500", **VENDORS)])  # type: ignore[arg-type]
+
+
+def test_newest_by_score_shows_each_scores_last_run() -> None:
+    def row(run_id: int, score: str, cagr: float) -> dict[str, object]:
+        config = {"factors": [[f"ml:{score}", 1.0]], "enter": 0.3}
+        return {"run_id": run_id, "config_json": json.dumps(config), "metrics_json": json.dumps({"cagr": cagr})}
+
+    rows = pd.DataFrame([row(130, "knn", 0.14), row(131, "svr", 0.12), row(140, "knn", 0.15)])
+    table = newest_by_score(rows)
+    assert table.loc["knn", "run_id"] == 140 and table.loc["knn", "cagr"] == 0.15
+    assert table.loc["svr", "run_id"] == 131
+    assert newest_by_score(rows.iloc[:0]).empty
+
+
+def test_a_strategy_is_found_in_the_registry_by_its_settings() -> None:
+    wanted = StrategyConfig(
+        family="multi_factor_lo",
+        enter=0.3,
+        exit_=0.4,
+        long_only=True,
+        beta_neutral=False,
+        price_vendors=("refinitiv",),
+        fundamentals_vendor=("sec", "refinitiv"),
+    )
+    stored = [json.dumps(_stored(c)) for c in (wanted, replace(wanted, enter=0.1, exit_=0.2), wanted)]
+    rows = pd.DataFrame({"run_id": [7, 9, 12], "config_json": stored})
+    assert matching_run(rows, wanted) == 12  # the newest of the two runs made with these settings
+    assert matching_run(rows, replace(wanted, enter=0.25)) is None
+    assert matching_run(rows.iloc[:0], wanted) is None

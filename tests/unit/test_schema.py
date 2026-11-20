@@ -2,7 +2,9 @@ import re
 
 import sqlalchemy as sa
 
-from equity_research.db import schema
+import equity_research.data.schema  # noqa: F401 - every package's tables are on the metadata the test walks
+import fixed_income_research.data.schema  # noqa: F401
+from research_core.data.db import schema
 
 IN_LIST = re.compile(r"^(\w+) IN \((.*)\)$")
 

@@ -2,9 +2,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import barings_garp as bg
-from equity_research.research.barings_estimates import CONSENSUS_REVISION_FACTORS, ESTIMATE_FACTORS
-from equity_research.research.qgarp_math import growth_piecewise
+from equity_research.strategies import barings_garp as bg
+from equity_research.strategies.barings_estimates import CONSENSUS_REVISION_FACTORS, ESTIMATE_FACTORS
+from equity_research.strategies.qgarp_math import growth_piecewise
 
 DAY = pd.Timestamp("2015-06-30")
 DATES = pd.DatetimeIndex([DAY])

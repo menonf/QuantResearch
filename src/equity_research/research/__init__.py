@@ -1,1 +1,1 @@
-"""Research: point-in-time panels, vendor-neutral accounting, factors, portfolios and backtests."""
+"""Small helpers for the notebooks only: nothing in ``src`` or ``tests`` imports this package."""

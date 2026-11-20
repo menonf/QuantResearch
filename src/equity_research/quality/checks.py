@@ -8,49 +8,7 @@ A check measures one number with SQL and compares it with a warning and a failur
 
 from __future__ import annotations
 
-import math
-from collections.abc import Sequence
-from dataclasses import dataclass
-
-import pandas as pd
-import sqlalchemy as sa
-from sqlalchemy.engine import Engine
-
-from equity_research.db import schema
-
-
-class GateFailedError(RuntimeError):
-    """A data-quality check failed."""
-
-
-@dataclass(frozen=True)
-class Check:
-    """One measurement and its thresholds; ``higher_is_better`` sets the direction."""
-
-    name: str
-    sql: str
-    warn: float
-    fail: float
-    higher_is_better: bool = True
-    describe: str = ""
-    examples: str | None = None  # a query listing the rows behind a warning, for whoever investigates it
-
-    def status(self, value: float) -> str:
-        """``pass``, ``warn`` or ``fail`` for a measured value."""
-        if self.higher_is_better:
-            return "fail" if value < self.fail else "warn" if value < self.warn else "pass"
-        return "fail" if value > self.fail else "warn" if value > self.warn else "pass"
-
-
-@dataclass(frozen=True)
-class CheckResult:
-    """A check's outcome."""
-
-    name: str
-    status: str
-    value: float
-    threshold: str
-
+from research_core.data.quality import Check
 
 #: A trading day is one on which at least half the index members have a price: a vendor's index levels on an
 #: exchange holiday (Refinitiv prints some) must not count every stock as missing that day.
@@ -62,23 +20,24 @@ class CheckResult:
 #: country's indices count on their own trading days - the days some of its members were priced: a London bank
 #: holiday is not a day New York's shares went unpriced, nor Thanksgiving one London's did.
 _MEMBER_DAYS_CTE = """
-WITH bars AS (SELECT DISTINCT listing_id, trade_date FROM market.price_bar),
+WITH bars AS (SELECT DISTINCT listing_id, trade_date FROM equity.price_bar),
 priced_in AS (
     SELECT m.index_id, b.trade_date, COUNT(*) AS priced FROM bars b
-    JOIN ref.index_membership m ON m.listing_id = b.listing_id AND b.trade_date >= m.start_date
+    JOIN equity.index_membership m ON m.listing_id = b.listing_id AND b.trade_date >= m.start_date
          AND (m.end_date IS NULL OR b.trade_date < m.end_date)
     GROUP BY m.index_id, b.trade_date
 ),
 priced AS (
     SELECT COALESCE(d.country, '') AS country, p.trade_date, SUM(p.priced) AS priced
-    FROM priced_in p JOIN ref.index_definition d ON d.index_id = p.index_id
+    FROM priced_in p JOIN equity.index_definition d ON d.index_id = p.index_id
     GROUP BY COALESCE(d.country, ''), p.trade_date
 ),
 moves AS (
     SELECT COALESCE(d.country, '') AS country, m.start_date AS day, 1 AS n
-    FROM ref.index_membership m JOIN ref.index_definition d ON d.index_id = m.index_id
+    FROM equity.index_membership m JOIN equity.index_definition d ON d.index_id = m.index_id
     UNION ALL SELECT COALESCE(d.country, ''), m.end_date, -1
-    FROM ref.index_membership m JOIN ref.index_definition d ON d.index_id = m.index_id WHERE m.end_date IS NOT NULL
+    FROM equity.index_membership m JOIN equity.index_definition d ON d.index_id = m.index_id
+    WHERE m.end_date IS NOT NULL
 ),
 calendar AS (
     SELECT country, day, SUM(n) AS n, SUM(priced) AS priced, MAX(traded) AS traded
@@ -104,13 +63,13 @@ BENCHMARK_DAYS = (
     + """,
 benchmark_country AS (
     SELECT u.benchmark_listing_id AS listing_id, MIN(COALESCE(d.country, '')) AS country
-    FROM ref.universe u JOIN ref.universe_component c ON c.universe_id = u.universe_id
-    JOIN ref.index_definition d ON d.index_id = c.index_id
+    FROM equity.universe u JOIN equity.universe_component c ON c.universe_id = u.universe_id
+    JOIN equity.index_definition d ON d.index_id = c.index_id
     WHERE u.benchmark_listing_id IS NOT NULL GROUP BY u.benchmark_listing_id
 ),
 benchmark_bars AS (
     SELECT DISTINCT b.listing_id, b.country, p.trade_date
-    FROM benchmark_country b JOIN market.price_bar p ON p.listing_id = b.listing_id
+    FROM benchmark_country b JOIN equity.price_bar p ON p.listing_id = b.listing_id
 ),
 benchmarks AS (
     SELECT listing_id, country, MIN(trade_date) AS first_day FROM benchmark_bars GROUP BY listing_id, country
@@ -132,11 +91,11 @@ WITH p AS (
     SELECT b.listing_id, b.vendor_id, b.trade_date, b.[close], b.currency,
            LAG(b.[close]) OVER (PARTITION BY b.listing_id, b.vendor_id ORDER BY b.trade_date) AS prev_close,
            LAG(b.currency) OVER (PARTITION BY b.listing_id, b.vendor_id ORDER BY b.trade_date) AS prev_currency
-    FROM market.price_bar b
-    JOIN ref.listing l ON l.listing_id = b.listing_id AND l.instrument_type IN ('equity', 'fund')
+    FROM equity.price_bar b
+    JOIN core.listing l ON l.listing_id = b.listing_id AND l.instrument_type IN ('equity', 'fund')
 ),
 r AS (
-    SELECT listing_id, vendor_id, ex_date, EXP(SUM(LOG(ratio))) AS ratio FROM market.corporate_action
+    SELECT listing_id, vendor_id, ex_date, EXP(SUM(LOG(ratio))) AS ratio FROM equity.corporate_action
     WHERE action_type IN ('split', 'spinoff') AND ratio > 0 GROUP BY listing_id, vendor_id, ex_date
 ),
 jumps AS (
@@ -156,29 +115,29 @@ _SUSPECT_HALVINGS = """
 WITH p AS (
     SELECT b.listing_id, b.vendor_id, b.trade_date, b.[close],
            LAG(b.[close]) OVER (PARTITION BY b.listing_id, b.vendor_id ORDER BY b.trade_date) AS prev_close
-    FROM market.price_bar b
-    JOIN ref.listing l ON l.listing_id = b.listing_id AND l.instrument_type = 'equity'
+    FROM equity.price_bar b
+    JOIN core.listing l ON l.listing_id = b.listing_id AND l.instrument_type = 'equity'
 ),
 halved AS (
     SELECT p.listing_id, p.vendor_id, p.trade_date, p.prev_close, p.[close], l.issuer_id
-    FROM p JOIN ref.listing l ON l.listing_id = p.listing_id
+    FROM p JOIN core.listing l ON l.listing_id = p.listing_id
     WHERE p.[close] > 0 AND p.prev_close / p.[close] BETWEEN 1.8 AND 2.5
-      AND EXISTS (SELECT 1 FROM ref.index_membership m WHERE m.listing_id = p.listing_id
+      AND EXISTS (SELECT 1 FROM equity.index_membership m WHERE m.listing_id = p.listing_id
                   AND p.trade_date >= m.start_date AND (m.end_date IS NULL OR p.trade_date < m.end_date))
-      AND NOT EXISTS (SELECT 1 FROM market.corporate_action a WHERE a.listing_id = p.listing_id
+      AND NOT EXISTS (SELECT 1 FROM equity.corporate_action a WHERE a.listing_id = p.listing_id
                       AND a.action_type IN ('split', 'spinoff') AND ABS(DATEDIFF(day, a.ex_date, p.trade_date)) <= 5)
 ),
-first_px AS (SELECT listing_id, MIN(trade_date) AS first_trade FROM market.price_bar GROUP BY listing_id),
+first_px AS (SELECT listing_id, MIN(trade_date) AS first_trade FROM equity.price_bar GROUP BY listing_id),
 suspect AS (
     SELECT h.*, sib.listing_id AS new_line_id, cb.shares AS shares_before, ca.shares AS shares_after
     FROM halved h
-    OUTER APPLY (SELECT TOP 1 s.listing_id FROM ref.listing s JOIN first_px f ON f.listing_id = s.listing_id
+    OUTER APPLY (SELECT TOP 1 s.listing_id FROM core.listing s JOIN first_px f ON f.listing_id = s.listing_id
                  WHERE s.issuer_id = h.issuer_id AND s.listing_id <> h.listing_id
                    AND f.first_trade BETWEEN DATEADD(day, -30, h.trade_date) AND DATEADD(day, 5, h.trade_date)) sib
-    OUTER APPLY (SELECT TOP 1 c.shares FROM market.share_count c WHERE c.listing_id = h.listing_id
+    OUTER APPLY (SELECT TOP 1 c.shares FROM equity.share_count c WHERE c.listing_id = h.listing_id
                    AND c.kind = 'outstanding' AND c.as_of_date < DATEADD(day, -3, h.trade_date)
                    AND c.as_of_date >= DATEADD(day, -100, h.trade_date) ORDER BY c.as_of_date DESC) cb
-    OUTER APPLY (SELECT TOP 1 c.shares FROM market.share_count c WHERE c.listing_id = h.listing_id
+    OUTER APPLY (SELECT TOP 1 c.shares FROM equity.share_count c WHERE c.listing_id = h.listing_id
                    AND c.kind = 'outstanding' AND c.as_of_date > DATEADD(day, 3, h.trade_date)
                    AND c.as_of_date <= DATEADD(day, 100, h.trade_date) ORDER BY c.as_of_date) ca
     WHERE sib.listing_id IS NOT NULL OR ca.shares >= 1.7 * cb.shares
@@ -187,11 +146,11 @@ suspect AS (
 #: A member (now or in the past) whose prices stop more than 45 days before its membership does: a leaver the
 #: vendor's event list missed, or a listing whose prices are missing.
 _MEMBERS_AFTER_LAST_PRICE = """
-WITH last_px AS (SELECT listing_id, MAX(trade_date) AS last_day FROM market.price_bar GROUP BY listing_id),
-newest AS (SELECT MAX(trade_date) AS d FROM market.price_bar),
+WITH last_px AS (SELECT listing_id, MAX(trade_date) AS last_day FROM equity.price_bar GROUP BY listing_id),
+newest AS (SELECT MAX(trade_date) AS d FROM equity.price_bar),
 stale AS (
     SELECT m.index_id, m.listing_id, m.start_date, m.end_date, p.last_day
-    FROM ref.index_membership m CROSS JOIN newest n LEFT JOIN last_px p ON p.listing_id = m.listing_id
+    FROM equity.index_membership m CROSS JOIN newest n LEFT JOIN last_px p ON p.listing_id = m.listing_id
     WHERE p.last_day IS NULL OR p.last_day < DATEADD(day, -45, COALESCE(m.end_date, n.d))
 )
 """
@@ -199,24 +158,24 @@ stale AS (
 
 #: The canonical tables whose every row names the raw batch it came from.
 PROVENANCED = (
-    "ref.listing",
-    "ref.identifier",
-    "ref.index_membership",
-    "ref.classification",
-    "market.price_bar",
-    "market.corporate_action",
-    "market.share_count",
-    "fund.financial_fact",
-    "fund.estimate",
-    "fund.estimate_revision",
-    "fund.estimate_actual",
-    "fund.document",
-    "fund.text_measure",
+    "core.listing",
+    "core.identifier",
+    "equity.index_membership",
+    "equity.classification",
+    "equity.price_bar",
+    "equity.corporate_action",
+    "equity.share_count",
+    "equity.financial_fact",
+    "equity.estimate",
+    "equity.estimate_revision",
+    "equity.estimate_actual",
+    "equity.document",
+    "equity.text_measure",
 )
 _OVERLAPPING_SPELLS = """
 WITH overlaps AS (
     SELECT a.index_id, a.listing_id, a.vendor_id, a.start_date, a.end_date, b.start_date AS next_start
-    FROM ref.index_membership a JOIN ref.index_membership b
+    FROM equity.index_membership a JOIN equity.index_membership b
       ON a.index_id = b.index_id AND a.listing_id = b.listing_id AND a.vendor_id = b.vendor_id
      AND a.start_date < b.start_date AND COALESCE(a.end_date, '9999-12-31') > b.start_date
 )
@@ -226,7 +185,7 @@ WITH overlaps AS (
 _IN_TWO_INDICES = """
 WITH spells AS (
     SELECT m.index_id, m.listing_id, m.vendor_id, m.start_date, m.end_date, d.country
-    FROM ref.index_membership m JOIN ref.index_definition d ON d.index_id = m.index_id
+    FROM equity.index_membership m JOIN equity.index_definition d ON d.index_id = m.index_id
 ),
 twice AS (
     SELECT a.listing_id, a.vendor_id, a.index_id, a.start_date, a.end_date, b.index_id AS other_index_id,
@@ -238,10 +197,10 @@ twice AS (
 )
 """
 _BEFORE_FIRST_TRADE = """
-WITH first_px AS (SELECT listing_id, MIN(trade_date) AS first_trade FROM market.price_bar GROUP BY listing_id),
+WITH first_px AS (SELECT listing_id, MIN(trade_date) AS first_trade FROM equity.price_bar GROUP BY listing_id),
 early AS (
     SELECT m.index_id, m.listing_id, m.vendor_id, m.start_date, f.first_trade
-    FROM ref.index_membership m JOIN first_px f ON f.listing_id = m.listing_id
+    FROM equity.index_membership m JOIN first_px f ON f.listing_id = m.listing_id
     WHERE m.start_date < DATEADD(day, -7, f.first_trade)
 )
 """
@@ -265,7 +224,7 @@ CORE_CHECKS: tuple[Check, ...] = (
         fail=1e9,  # some moves are real (a bankruptcy, a buyout): each one is looked at, none stops a load
         higher_is_better=False,
         describe="days a share moved 2.5x or more that no split or spin-off explains",
-        examples=_JUMPS + "SELECT TOP 50 j.*, l.name FROM jumps j JOIN ref.listing l ON l.listing_id = j.listing_id "
+        examples=_JUMPS + "SELECT TOP 50 j.*, l.name FROM jumps j JOIN core.listing l ON l.listing_id = j.listing_id "
         "ORDER BY ABS(LOG(j.[close] * COALESCE(j.ratio, 1.0) / j.prev_close)) DESC",
     ),
     Check(
@@ -276,7 +235,7 @@ CORE_CHECKS: tuple[Check, ...] = (
         higher_is_better=False,
         describe="days a member's price halved, unexplained, as a new share line began or its share count doubled",
         examples=_SUSPECT_HALVINGS + "SELECT TOP 50 s.*, l.name FROM suspect s "
-        "JOIN ref.listing l ON l.listing_id = s.listing_id ORDER BY s.trade_date",
+        "JOIN core.listing l ON l.listing_id = s.listing_id ORDER BY s.trade_date",
     ),
     Check(
         "members_after_last_price",
@@ -286,12 +245,12 @@ CORE_CHECKS: tuple[Check, ...] = (
         higher_is_better=False,
         describe="membership spells that go on more than 45 days after the listing's last price (a missed leaver)",
         examples=_MEMBERS_AFTER_LAST_PRICE
-        + "SELECT TOP 50 d.code, s.*, l.name FROM stale s JOIN ref.listing l ON l.listing_id = s.listing_id "
-        "JOIN ref.index_definition d ON d.index_id = s.index_id ORDER BY s.last_day",
+        + "SELECT TOP 50 d.code, s.*, l.name FROM stale s JOIN core.listing l ON l.listing_id = s.listing_id "
+        "JOIN equity.index_definition d ON d.index_id = s.index_id ORDER BY s.last_day",
     ),
     Check(
         "equity_listings_without_issuer",
-        "SELECT CAST(COUNT(*) AS FLOAT) FROM ref.listing WHERE instrument_type = 'equity' AND issuer_id IS NULL",
+        "SELECT CAST(COUNT(*) AS FLOAT) FROM core.listing WHERE instrument_type = 'equity' AND issuer_id IS NULL",
         warn=0,
         fail=1e9,
         higher_is_better=False,
@@ -299,12 +258,13 @@ CORE_CHECKS: tuple[Check, ...] = (
     ),
     Check(
         "facts_published_before_period_end",
-        "SELECT CAST(COUNT(*) AS FLOAT) FROM fund.financial_fact WHERE period_end > CAST(published_at AS DATE)",
+        "SELECT CAST(COUNT(*) AS FLOAT) FROM equity.financial_fact WHERE period_end > CAST(published_at AS DATE)",
         warn=0,
         fail=0,
         higher_is_better=False,
         describe="financial facts about a period that had not ended when they were published (impossible: bad data)",
-        examples="SELECT TOP 50 f.*, i.name FROM fund.financial_fact f JOIN ref.issuer i ON i.issuer_id = f.issuer_id "
+        examples="SELECT TOP 50 f.*, i.name FROM equity.financial_fact f "
+        "JOIN core.issuer i ON i.issuer_id = f.issuer_id "
         "WHERE f.period_end > CAST(f.published_at AS DATE) ORDER BY f.period_end DESC",
     ),
     Check(
@@ -315,7 +275,7 @@ CORE_CHECKS: tuple[Check, ...] = (
         higher_is_better=False,
         describe="membership spells of one listing in one index (one vendor) that overlap",
         examples=_OVERLAPPING_SPELLS + "SELECT TOP 50 o.*, l.name FROM overlaps o "
-        "JOIN ref.listing l ON l.listing_id = o.listing_id",
+        "JOIN core.listing l ON l.listing_id = o.listing_id",
     ),
     Check(
         "members_of_two_indices",
@@ -325,7 +285,7 @@ CORE_CHECKS: tuple[Check, ...] = (
         higher_is_better=False,
         describe="spells of one listing in two of a market's indices at once (they never share a member)",
         examples=_IN_TWO_INDICES + "SELECT TOP 50 t.*, l.name FROM twice t "
-        "JOIN ref.listing l ON l.listing_id = t.listing_id ORDER BY t.start_date",
+        "JOIN core.listing l ON l.listing_id = t.listing_id ORDER BY t.start_date",
     ),
     Check(
         "members_before_first_trade",
@@ -335,11 +295,11 @@ CORE_CHECKS: tuple[Check, ...] = (
         higher_is_better=False,
         describe="membership spells starting over a week before the listing's first price (a join the vendor missed)",
         examples=_BEFORE_FIRST_TRADE + "SELECT TOP 50 e.*, l.name FROM early e "
-        "JOIN ref.listing l ON l.listing_id = e.listing_id ORDER BY e.first_trade DESC",
+        "JOIN core.listing l ON l.listing_id = e.listing_id ORDER BY e.first_trade DESC",
     ),
     Check(
         "bars_outside_their_range",
-        "SELECT CAST(COUNT(*) AS FLOAT) FROM market.price_bar WHERE high < low "
+        "SELECT CAST(COUNT(*) AS FLOAT) FROM equity.price_bar WHERE high < low "
         "OR [close] > high * 1.0001 OR [close] < low * 0.9999",
         warn=0,
         fail=1e9,
@@ -358,8 +318,8 @@ CORE_CHECKS: tuple[Check, ...] = (
     Check(
         "issuers_with_cik_without_facts",
         """SELECT COALESCE(CAST(SUM(CASE WHEN f.issuer_id IS NULL THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(*), 0), 0)
-           FROM ref.identifier i
-           LEFT JOIN (SELECT DISTINCT issuer_id FROM fund.financial_fact) f ON f.issuer_id = i.entity_id
+           FROM core.identifier i
+           LEFT JOIN (SELECT DISTINCT issuer_id FROM equity.financial_fact) f ON f.issuer_id = i.entity_id
            WHERE i.entity_type = 'issuer' AND i.id_type = 'CIK'""",
         warn=0.10,
         fail=0.50,
@@ -370,7 +330,7 @@ CORE_CHECKS: tuple[Check, ...] = (
         "annual_reports_without_text_measures",
         """SELECT COALESCE(CAST(SUM(CASE WHEN m.batch_id IS NULL THEN 1 ELSE 0 END) AS FLOAT) / NULLIF(COUNT(*), 0), 0)
            FROM ingest.batch b
-           LEFT JOIN (SELECT DISTINCT batch_id FROM fund.text_measure) m ON m.batch_id = b.batch_id
+           LEFT JOIN (SELECT DISTINCT batch_id FROM equity.text_measure) m ON m.batch_id = b.batch_id
            WHERE b.dataset = 'annual_report'""",
         warn=0.01,
         fail=0.10,
@@ -378,41 +338,6 @@ CORE_CHECKS: tuple[Check, ...] = (
         describe="landed 10-K documents with no text measures (a load stopped between landing and measuring)",
     ),
 )
-
-
-def run_checks(engine: Engine, checks: Sequence[Check], *, run_id: int | None = None) -> list[CheckResult]:
-    """Measure every check and record the outcomes."""
-    results = []
-    with engine.begin() as conn:
-        for c in checks:
-            raw = conn.execute(sa.text(c.sql)).scalar()
-            value = float(raw) if raw is not None else float("nan")
-            status = "fail" if math.isnan(value) else c.status(value)  # NaN: nothing to measure
-            op = ">=" if c.higher_is_better else "<="
-            threshold = f"warn {op} {c.warn}, fail {op} {c.fail}"
-            results.append(CheckResult(c.name, status, value, threshold))
-            conn.execute(
-                sa.insert(schema.check_result).values(
-                    run_id=run_id, check_name=c.name, status=status, value=f"{value:.6g}", threshold=threshold
-                )
-            )
-    return results
-
-
-def gate(results: Sequence[CheckResult]) -> None:
-    """Stop the pipeline when a check failed."""
-    failed = [r for r in results if r.status == "fail"]
-    if failed:
-        raise GateFailedError("; ".join(f"{r.name} = {r.value:.6g} ({r.threshold})" for r in failed))
-
-
-def examples(engine: Engine, check: Check) -> pd.DataFrame:
-    """The rows behind a check's value (empty when the check has no examples query)."""
-    if check.examples is None:
-        return pd.DataFrame()
-    with engine.connect() as conn:
-        result = conn.execute(sa.text(check.examples))
-        return pd.DataFrame(result.all(), columns=list(result.keys()))
 
 
 def by_name(name: str) -> Check:

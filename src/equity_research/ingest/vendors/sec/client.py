@@ -15,12 +15,11 @@ from typing import Any
 
 import requests
 
-from equity_research.settings import get_settings
+from research_core.settings import get_settings
 
 log = logging.getLogger(__name__)
 
 COMPANY_FACTS_BULK_URL = "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"
-COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
 #: Public CIK - CUSIP map built from SEC 13D / 13G filings (https://github.com/leoliu0/cik-cusip-mapping).
 CIK_CUSIP_MAP_URL = "https://raw.githubusercontent.com/leoliu0/cik-cusip-mapping/master/cik-cusip-maps.csv"

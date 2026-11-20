@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import synthetic as syn
+from equity_research.ml import synthetic as syn
 
 
 def _panel(t: int = 1500, n: int = 60, seed: int = 0) -> tuple[pd.DataFrame, np.ndarray]:

@@ -9,9 +9,7 @@ import logging
 import keyring
 import typer
 
-from equity_research.db.engine import get_engine, make_engine
-from equity_research.db.migrate import upgrade_to_latest
-from equity_research.pipelines.copy_database import copy_database
+from equity_research.data.cache import ResearchCache
 from equity_research.pipelines.load_benchmarks import load_benchmarks
 from equity_research.pipelines.load_corrections import load_corrections
 from equity_research.pipelines.load_estimates import STEPS as ESTIMATE_STEPS
@@ -29,19 +27,22 @@ from equity_research.pipelines.load_simfin import load_simfin
 from equity_research.pipelines.load_simfin import probe as probe_simfin
 from equity_research.pipelines.load_tiingo import load_tiingo
 from equity_research.pipelines.load_tiingo import probe as probe_tiingo
-from equity_research.pipelines.refresh import refresh
+from equity_research.pipelines.refresh import RETENTION, refresh
 from equity_research.pipelines.sources import describe_sources, probe_sources, run_sources
-from equity_research.quality.checks import CORE_CHECKS, run_checks
-from equity_research.raw.store import prune
-from equity_research.research.cache import ResearchCache
-from equity_research.settings import KEYRING_SERVICE, REPO_ROOT, DatabaseSettings, get_settings
+from equity_research.quality.checks import CORE_CHECKS
+from research_core.data.db.copy import copy_database
+from research_core.data.db.engine import get_engine, make_engine
+from research_core.data.db.migrate import upgrade_to_latest
+from research_core.data.quality import run_checks
+from research_core.data.raw_store import prune
+from research_core.settings import KEYRING_SERVICE, REPO_ROOT, DatabaseSettings, get_settings
 
-app = typer.Typer(help="EquityResearch pipelines", no_args_is_help=True)
+app = typer.Typer(help="QuantResearch: the equity pipelines", no_args_is_help=True)
 
 
 @app.callback()
 def main() -> None:
-    """EquityResearch pipelines (a command group: one sub-command per pipeline)."""
+    """QuantResearch: the equity pipelines (a command group: one sub-command per pipeline)."""
 
 
 def _logging(verbose: bool) -> None:
@@ -103,7 +104,7 @@ def load_estimates_command(
 ) -> None:
     """Load analysts' estimates from LSEG (Workspace running): consensus, actuals, revisions. Resumable.
 
-    The whole history (--start, default 2005) or a top-up from --since YYYY-MM-DD; --end limits a trial build.
+    The whole history (--start, default 2000) or a top-up from --since YYYY-MM-DD; --end limits a trial build.
     """
     _logging(verbose)
     report = load_estimates(
@@ -308,7 +309,7 @@ def copy_database_command(source_server: str, source_name: str, verbose: bool = 
 def prune_raw_command(dry_run: bool = False) -> None:
     """Remove old copies of raw files the vendor publishes again anyway (the SEC bulk file); keeps the newest two."""
     with get_engine().begin() as conn:
-        pruned = prune(conn, dry_run=dry_run)
+        pruned = prune(conn, retention=RETENTION, dry_run=dry_run)
     for p in pruned:
         typer.echo(
             f"{'would remove' if dry_run else 'removed'} batch {p.batch_id} {p.vendor}/{p.dataset}: {p.path.name}"
@@ -320,7 +321,7 @@ def prune_raw_command(dry_run: bool = False) -> None:
 def sync_cache(verbose: bool = False, rebuild: list[str] | None = None) -> None:
     """Pull new and changed rows into the local research cache.
 
-    ``--rebuild TABLE`` copies a table afresh - after a repair deleted rows (``--rebuild fund.financial_fact``).
+    ``--rebuild TABLE`` copies a table afresh - after a repair deleted rows (``--rebuild equity.financial_fact``).
     """
     _logging(verbose)
     typer.echo(json.dumps(ResearchCache().sync(get_engine(), rebuild=tuple(rebuild or ())), indent=2))

@@ -19,7 +19,6 @@ import sqlalchemy as sa
 from conftest import scratch_database
 from sqlalchemy.engine import Engine
 
-from equity_research.ingest.identity import add_identifiers, ensure_listings
 from equity_research.ingest.vendors.sec.client import (
     CIK_CUSIP_MAP_URL,
     COMPANY_FACTS_BULK_URL,
@@ -27,6 +26,7 @@ from equity_research.ingest.vendors.sec.client import (
     SecClient,
 )
 from equity_research.pipelines.load_sec import load_sec
+from research_core.data.identity import add_identifiers, ensure_listings
 
 pytestmark = pytest.mark.integration
 
@@ -170,7 +170,7 @@ def _ciks(engine: Engine, company: str) -> list[str]:
     with engine.connect() as c:
         rows = c.execute(
             sa.text(
-                "SELECT d.value FROM ref.identifier d JOIN ref.issuer i ON i.issuer_id = d.entity_id "
+                "SELECT d.value FROM core.identifier d JOIN core.issuer i ON i.issuer_id = d.entity_id "
                 "WHERE d.entity_type = 'issuer' AND d.id_type = 'CIK' AND i.name = :n ORDER BY d.value"
             ),
             {"n": company},
@@ -182,7 +182,7 @@ def _assets(engine: Engine, company: str) -> dict[int, float]:
     with engine.connect() as c:
         rows = c.execute(
             sa.text(
-                "SELECT YEAR(f.period_end), f.value FROM fund.financial_fact f JOIN ref.issuer i "
+                "SELECT YEAR(f.period_end), f.value FROM equity.financial_fact f JOIN core.issuer i "
                 "ON i.issuer_id = f.issuer_id WHERE i.name = :n AND f.item = 'total_assets'"
             ),
             {"n": company},
@@ -217,7 +217,7 @@ def test_a_london_ticker_is_not_a_us_one(loaded: tuple[Engine, dict[str, Any]]) 
     # without the market check it takes Disney's CIK, and the two companies are merged into one
     with engine.connect() as c:
         companies = c.execute(
-            sa.text("SELECT COUNT(DISTINCT issuer_id) FROM ref.listing WHERE name IN ('Test London', 'Walt Disney')")
+            sa.text("SELECT COUNT(DISTINCT issuer_id) FROM core.listing WHERE name IN ('Test London', 'Walt Disney')")
         ).scalar_one()
         assert companies == 2
     assert _ciks(engine, "Test London plc") == []

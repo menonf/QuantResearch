@@ -6,7 +6,7 @@
    another code (``^GSPC`` is the listing whose RIC is ``.SPX``), else a new listing;
    An index known under another code that is not loaded yet waits (no second listing for one index);
 2. its chart from 30 days before the latest stored bar (the whole history the first time) is landed, then
-   normalised into ``market.price_bar`` and ``market.corporate_action`` with vendor ``yahoo``.
+   normalised into ``equity.price_bar`` and ``equity.corporate_action`` with vendor ``yahoo``.
 
 Run it after the LSEG load on a fresh database, so the index levels both vendors cover share one listing.
 Re-running is safe: the overlap is rewritten only where Yahoo changed a value.
@@ -23,16 +23,16 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import UpsertResult, upsert
-from equity_research.ingest.identity import OPEN_START, add_identifiers, anchor_map, ensure_listings
+from equity_research.data import schema
 from equity_research.ingest.reference import write_reference
 from equity_research.ingest.vendors.yahoo import VENDOR
 from equity_research.ingest.vendors.yahoo.client import YahooClient
 from equity_research.ingest.vendors.yahoo.normalize import parse_chart
-from equity_research.raw.store import land_bytes, land_frame, mark
+from research_core.data import ops
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import UpsertResult, upsert
+from research_core.data.identity import OPEN_START, add_identifiers, anchor_map, ensure_listings
+from research_core.data.raw_store import land_bytes, land_frame, mark
 
 log = logging.getLogger(__name__)
 

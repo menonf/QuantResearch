@@ -16,9 +16,9 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 
-from equity_research.db import schema
-from equity_research.db.upsert import upsert
-from equity_research.ingest.identity import anchor_map
+from equity_research.data import schema
+from research_core.data.db.upsert import upsert
+from research_core.data.identity import anchor_map
 
 
 @dataclass(frozen=True)

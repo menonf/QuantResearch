@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import labels
+from research_core.analytics.signals import labels
 
 DAYS = pd.bdate_range("2020-01-01", periods=60)
 

@@ -4,8 +4,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research.cache import ResearchCache
-from equity_research.research.data import (
+from equity_research.data.cache import ResearchCache
+from equity_research.data.panels import (
+    latest_counts,
+    membership_mask,
+    price_returns,
+    spinoff_days,
+    split_adjusted,
+    split_factor,
+    total_returns,
+)
+from equity_research.data.ratios import market_values, plausible_market_cap, ratio_panel
+from equity_research.data.universe import (
     CurrencyError,
     accounts_as_of,
     check_currency,
@@ -24,18 +34,9 @@ from equity_research.research.data import (
     stamp_duty,
     universe_currency,
     vendor_items,
+    with_legacy_euro,
 )
-from equity_research.research.panels import (
-    latest_counts,
-    membership_mask,
-    price_returns,
-    spinoff_days,
-    split_adjusted,
-    split_factor,
-    total_returns,
-    trading_days,
-)
-from equity_research.research.ratios import market_values, plausible_market_cap, ratio_panel
+from research_core.data.calendars import trading_days
 
 DAYS = pd.DatetimeIndex(pd.to_datetime(["2020-08-27", "2020-08-28", "2020-08-31", "2020-09-01"]))
 ACTIONS = pd.DataFrame(
@@ -439,17 +440,17 @@ def test_a_london_universe_is_in_pounds_without_its_trusts_and_pays_stamp_duty(t
         (tmp_path / name).mkdir()
         frame.to_parquet(tmp_path / name / "part-1.parquet")
 
-    table("ref.vendor", pd.DataFrame({"vendor_id": [1], "vendor_code": ["refinitiv"], "name": ["LSEG"]}))
+    table("core.vendor", pd.DataFrame({"vendor_id": [1], "vendor_code": ["refinitiv"], "name": ["LSEG"]}))
     table(
-        "ref.index_definition",
+        "equity.index_definition",
         pd.DataFrame({"index_id": [1, 2], "code": ["FTSE100", "SP500"], "currency": ["GBP", "USD"]}),
     )
     table(
-        "ref.issuer",
+        "core.issuer",
         pd.DataFrame({"issuer_id": [1, 2, 3, 4], "incorporation_country": ["GB", "JE", "GB", "IE"], "name": "x"}),
     )
     table(
-        "ref.listing",
+        "core.listing",
         pd.DataFrame(
             {
                 "listing_id": [10, 20, 30, 40, 50],
@@ -488,6 +489,27 @@ def test_a_dividend_declared_abroad_is_read_in_the_universes_currency() -> None:
     assert out.loc[2, "amount"] == pytest.approx(10.0 * 0.055 / 1.30)
     assert out.loc[3, "amount"] == 0.30 and out.loc[4, "ratio"] == 2.0  # already in pounds; a split untouched
     assert 5 not in out.index and "currency" not in out.columns  # no rate for yen: left out, not read as pounds
+
+
+def test_a_dividend_in_a_former_euro_currency_converts_at_its_fixed_rate() -> None:
+    # UDG Healthcare's dividend of December 2000 in Irish pounds, on its London line
+    rates = with_legacy_euro(
+        pd.DataFrame({"EUR": [0.88], "GBP": [1.47]}, index=pd.to_datetime(["2000-12-18"])).assign(USD=1.0)
+    )
+    actions = pd.DataFrame(
+        {
+            "listing_id": [1],
+            "action_type": ["cash_dividend"],
+            "ex_date": pd.to_datetime(["2000-12-18"]),
+            "amount": [0.132],
+            "ratio": [None],
+            "currency": ["IEP"],
+        }
+    )
+    out = dividends_in(actions, rates, "GBP")
+    assert out.loc[0, "amount"] == pytest.approx(0.132 / 0.787564 * 0.88 / 1.47)  # pounds -> euros -> sterling
+    assert rates.loc["2000-12-18", "NLG"] == pytest.approx(0.88 / 2.20371)
+    assert with_legacy_euro(pd.DataFrame({"GBP": [1.47]})).columns.tolist() == ["GBP"]  # no euro: nothing to follow
 
 
 def test_bars_quoted_in_another_currency_are_read_in_the_universes() -> None:

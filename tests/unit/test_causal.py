@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import causal as cz
-from equity_research.research import validation as va
+from equity_research.ml import causal as cz
+from research_core.analytics.signals import validation as va
 
 MONTHS = pd.date_range("2010-01-31", "2014-12-31", freq="ME")
 NAMES = list(range(1, 201))

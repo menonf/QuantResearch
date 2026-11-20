@@ -12,8 +12,8 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import DBAPIError
 
-from equity_research.db import engine as db_engine
-from equity_research.settings import DatabaseSettings
+from research_core.data.db import engine as db_engine
+from research_core.settings import DatabaseSettings
 
 AZURE = DatabaseSettings("example.database.windows.net", "equity_research", "user", "secret", "ODBC Driver 18")
 

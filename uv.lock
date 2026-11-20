@@ -665,99 +665,13 @@ wheels = [
 ]
 
 [[package]]
-name = "equity-research"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "alembic" },
-    { name = "arch" },
-    { name = "duckdb" },
-    { name = "keyring" },
-    { name = "lseg-data" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pyarrow" },
-    { name = "pycountry" },
-    { name = "pyodbc" },
-    { name = "requests" },
-    { name = "scikit-learn" },
-    { name = "sqlalchemy" },
-    { name = "statsmodels" },
-    { name = "typer" },
+name = "et-xmlfile"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/38/af70d7ab1ae9d4da450eeec1fa3918940a5fafb9055e934af8d6eb0c2313/et_xmlfile-2.0.0.tar.gz", hash = "sha256:dab3f4764309081ce75662649be815c4c9081e88f0837825f90fd28317d4da54", size = 17234, upload-time = "2024-10-25T17:25:40.039Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl", hash = "sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa", size = 18059, upload-time = "2024-10-25T17:25:39.051Z" },
 ]
-
-[package.dev-dependencies]
-deep = [
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
-    { name = "torch", version = "2.15.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform == 'win32'" },
-]
-dev = [
-    { name = "mypy" },
-    { name = "pandas-stubs" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "types-requests" },
-]
-ml = [
-    { name = "lightgbm" },
-    { name = "optuna" },
-]
-notebooks = [
-    { name = "ipykernel" },
-    { name = "matplotlib" },
-    { name = "nbclient" },
-    { name = "nbformat" },
-]
-text = [
-    { name = "transformers" },
-]
-vendors = [
-    { name = "norgatedata" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "alembic", specifier = ">=1.14" },
-    { name = "arch", specifier = ">=8.0.0" },
-    { name = "duckdb", specifier = ">=1.1" },
-    { name = "keyring", specifier = ">=25" },
-    { name = "lseg-data", specifier = ">=2.1.1" },
-    { name = "numpy", specifier = ">=2.1" },
-    { name = "pandas", specifier = ">=2.2" },
-    { name = "pyarrow", specifier = ">=18" },
-    { name = "pycountry", specifier = ">=26.2.16" },
-    { name = "pyodbc", specifier = ">=5.2" },
-    { name = "requests", specifier = ">=2.32" },
-    { name = "scikit-learn", specifier = ">=1.5" },
-    { name = "sqlalchemy", specifier = ">=2.0.36" },
-    { name = "statsmodels", specifier = ">=0.15.0" },
-    { name = "typer", specifier = ">=0.15" },
-]
-
-[package.metadata.requires-dev]
-deep = [
-    { name = "torch", marker = "sys_platform != 'win32'", specifier = ">=2.15.0" },
-    { name = "torch", marker = "sys_platform == 'win32'", specifier = ">=2.15.0", index = "https://download.pytorch.org/whl/cu132" },
-]
-dev = [
-    { name = "mypy", specifier = ">=1.13" },
-    { name = "pandas-stubs", specifier = ">=2.2" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "ruff", specifier = ">=0.8" },
-    { name = "types-requests", specifier = ">=2.32" },
-]
-ml = [
-    { name = "lightgbm", specifier = ">=4.7.0" },
-    { name = "optuna", specifier = ">=5.0.0" },
-]
-notebooks = [
-    { name = "ipykernel", specifier = ">=6.29" },
-    { name = "matplotlib", specifier = ">=3.9" },
-    { name = "nbclient", specifier = ">=0.10" },
-    { name = "nbformat", specifier = ">=5.10" },
-]
-text = [{ name = "transformers", specifier = ">=5.22.2" }]
-vendors = [{ name = "norgatedata", specifier = ">=1.0.77" }]
 
 [[package]]
 name = "executing"
@@ -2056,6 +1970,18 @@ wheels = [
 ]
 
 [[package]]
+name = "openpyxl"
+version = "3.1.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "et-xmlfile" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3d/f9/88d94a75de065ea32619465d2f77b29a0469500e99012523b91cc4141cd1/openpyxl-3.1.5.tar.gz", hash = "sha256:cf0e3cf56142039133628b5acffe8ef0c12bc902d2aadd3e0fe5878dc08d1050", size = 186464, upload-time = "2024-06-28T14:03:44.161Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c0/da/977ded879c29cbd04de313843e76868e6e13408a94ed6b987245dc7c8506/openpyxl-3.1.5-py2.py3-none-any.whl", hash = "sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2", size = 250910, upload-time = "2024-06-28T14:03:41.161Z" },
+]
+
+[[package]]
 name = "optuna"
 version = "5.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2580,6 +2506,103 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/b5/33b781666f3f52ae834bc9c8e38f4f0483a826c5a91cccc993292007bf10/pyzmq-27.2.0-cp315-cp315t-win_amd64.whl", hash = "sha256:edce90a1e588ec63adbf612cc0ad582de4169cd216c7ae53c15f42a2ee902f35", size = 670701, upload-time = "2026-08-20T19:07:32.895Z" },
     { url = "https://files.pythonhosted.org/packages/6e/97/bc4f0edefb992df4fdebcf9f0cc40f631cd4ed277e1ed59ef2cd99a5c8c5/pyzmq-27.2.0-cp315-cp315t-win_arm64.whl", hash = "sha256:a843094b4d3d633bc3623e47a2ff50742d6af02bc1f7606aa2e67e971e21878d", size = 581985, upload-time = "2026-08-20T19:07:34.19Z" },
 ]
+
+[[package]]
+name = "quant-research"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "alembic" },
+    { name = "arch" },
+    { name = "duckdb" },
+    { name = "keyring" },
+    { name = "lseg-data" },
+    { name = "numpy" },
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pycountry" },
+    { name = "pyodbc" },
+    { name = "requests" },
+    { name = "scikit-learn" },
+    { name = "sqlalchemy" },
+    { name = "statsmodels" },
+    { name = "typer" },
+]
+
+[package.dev-dependencies]
+deep = [
+    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
+    { name = "torch", version = "2.15.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform == 'win32'" },
+]
+dev = [
+    { name = "mypy" },
+    { name = "pandas-stubs" },
+    { name = "pytest" },
+    { name = "ruff" },
+    { name = "types-requests" },
+]
+ml = [
+    { name = "lightgbm" },
+    { name = "optuna" },
+]
+notebooks = [
+    { name = "ipykernel" },
+    { name = "matplotlib" },
+    { name = "nbclient" },
+    { name = "nbformat" },
+]
+text = [
+    { name = "transformers" },
+]
+vendors = [
+    { name = "norgatedata" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.14" },
+    { name = "arch", specifier = ">=8.0.0" },
+    { name = "duckdb", specifier = ">=1.1" },
+    { name = "keyring", specifier = ">=25" },
+    { name = "lseg-data", specifier = ">=2.1.1" },
+    { name = "numpy", specifier = ">=2.1" },
+    { name = "openpyxl", specifier = ">=3.1" },
+    { name = "pandas", specifier = ">=2.2" },
+    { name = "pyarrow", specifier = ">=18" },
+    { name = "pycountry", specifier = ">=26.2.16" },
+    { name = "pyodbc", specifier = ">=5.2" },
+    { name = "requests", specifier = ">=2.32" },
+    { name = "scikit-learn", specifier = ">=1.5" },
+    { name = "sqlalchemy", specifier = ">=2.0.36" },
+    { name = "statsmodels", specifier = ">=0.15.0" },
+    { name = "typer", specifier = ">=0.15" },
+]
+
+[package.metadata.requires-dev]
+deep = [
+    { name = "torch", marker = "sys_platform != 'win32'", specifier = ">=2.15.0" },
+    { name = "torch", marker = "sys_platform == 'win32'", specifier = ">=2.15.0", index = "https://download.pytorch.org/whl/cu132" },
+]
+dev = [
+    { name = "mypy", specifier = ">=1.13" },
+    { name = "pandas-stubs", specifier = ">=2.2" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "ruff", specifier = ">=0.8" },
+    { name = "types-requests", specifier = ">=2.32" },
+]
+ml = [
+    { name = "lightgbm", specifier = ">=4.7.0" },
+    { name = "optuna", specifier = ">=5.0.0" },
+]
+notebooks = [
+    { name = "ipykernel", specifier = ">=6.29" },
+    { name = "matplotlib", specifier = ">=3.9" },
+    { name = "nbclient", specifier = ">=0.10" },
+    { name = "nbformat", specifier = ">=5.10" },
+]
+text = [{ name = "transformers", specifier = ">=5.22.2" }]
+vendors = [{ name = "norgatedata", specifier = ">=1.0.77" }]
 
 [[package]]
 name = "referencing"

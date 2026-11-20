@@ -2,7 +2,7 @@
 
     report = refresh(engine)
 
-1. **every source** in :func:`~equity_research.settings.vendor_preferences` ``.sources``, in order, asking only for
+1. **every source** in :func:`~equity_research.preferences.vendor_preferences` ``.sources``, in order, asking only for
    what changed (:mod:`.sources`): by default LSEG (members and listings in full; prices, dividends, splits and share
    counts from a few days before the newest price we hold, statements from a year before), Yahoo (the last month of
    benchmarks) and the SEC (its file again only when ours is a month old). When LSEG's daily limit stops it, the other
@@ -24,12 +24,26 @@ from typing import Any
 import pandas as pd
 from sqlalchemy.engine import Engine
 
+from equity_research.data.cache import ResearchCache
 from equity_research.pipelines.sources import run_sources
-from equity_research.quality.checks import CORE_CHECKS, gate, run_checks
-from equity_research.raw.store import prune
-from equity_research.research.cache import ResearchCache
+from equity_research.quality.checks import CORE_CHECKS
+from research_core.data.quality import gate, run_checks
+from research_core.data.raw_store import prune
 
 log = logging.getLogger(__name__)
+
+#: ``{(vendor, dataset): files kept}`` for public files that can be downloaded again at any time; everything else
+#: (LSEG answers cost quota, Yahoo's history is not guaranteed) is kept forever.
+RETENTION: dict[tuple[str, str], int] = {
+    ("sec", "companyfacts_bulk"): 2,
+    ("sec", "company_tickers"): 2,
+    ("sec", "cik_cusip_map"): 2,
+    ("tiingo", "supported_tickers"): 2,
+    ("simfin", "companies"): 2,
+    ("simfin", "industries"): 2,
+    ("simfin", "income_quarterly"): 2,
+    ("simfin", "balance_quarterly"): 2,
+}
 
 
 def refresh(engine: Engine, *, cache: ResearchCache | None = None) -> dict[str, Any]:
@@ -44,9 +58,9 @@ def refresh(engine: Engine, *, cache: ResearchCache | None = None) -> dict[str, 
 
 
 def prune_raw(engine: Engine) -> dict[str, float]:
-    """The raw-zone clean-up (:func:`~equity_research.raw.store.prune`), summed up."""
+    """The raw-zone clean-up (:func:`~research_core.data.raw_store.prune`), summed up."""
     with engine.begin() as conn:
-        pruned = prune(conn)
+        pruned = prune(conn, retention=RETENTION)
     return {"files": len(pruned), "megabytes": round(sum(p.bytes for p in pruned) / 1e6, 1)}
 
 

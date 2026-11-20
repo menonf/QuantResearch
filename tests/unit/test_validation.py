@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import validation as v
+from research_core.analytics.signals import validation as v
 
 CALENDAR = pd.bdate_range("2010-01-01", "2016-12-31")
 

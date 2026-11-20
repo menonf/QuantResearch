@@ -2,10 +2,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import features as ft
-from equity_research.research import ml
-from equity_research.research import model_features as mf
-from equity_research.research.data import UniverseData
+from equity_research.data.universe import UniverseData
+from equity_research.ml import features as ft
+from equity_research.ml import model_features as mf
+from equity_research.strategies import learned_value as ml
 
 DAYS = pd.bdate_range("2018-01-01", "2021-12-31")
 NAMES = list(range(1, 31))
@@ -168,7 +168,7 @@ def test_market_regime_separates_calm_from_turbulent_years() -> None:
 
 
 def test_style_panels_turn_exposures_into_one_panel_per_style() -> None:
-    from equity_research.research import risk_model as rm  # noqa: PLC0415
+    from equity_research.analytics.risk import risk_model as rm  # noqa: PLC0415
 
     dates = [pd.Timestamp("2020-01-31"), pd.Timestamp("2020-02-28")]
     loadings = {d: pd.DataFrame({"Value": [0.5, -0.5], "Size": [1.0, 2.0]}, index=[1, 2]) for d in dates}

@@ -19,8 +19,7 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
+from equity_research.data import schema
 from equity_research.pipelines.load_benchmarks import load_benchmarks
 from equity_research.pipelines.load_corrections import load_corrections
 from equity_research.pipelines.load_estimates import load_estimates, refresh_estimates
@@ -37,7 +36,8 @@ from equity_research.pipelines.load_simfin import load_simfin
 from equity_research.pipelines.load_simfin import probe as probe_simfin
 from equity_research.pipelines.load_tiingo import load_tiingo
 from equity_research.pipelines.load_tiingo import probe as probe_tiingo
-from equity_research.settings import vendor_preferences
+from equity_research.preferences import vendor_preferences
+from research_core.data.db.schema import vendor_id
 
 Mode = Literal["build", "refresh"]
 PRICE_OVERLAP_DAYS = 10  # a refresh asks again for the last days: vendors correct recent prices

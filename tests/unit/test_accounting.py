@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from equity_research.research.accounting import (
+from equity_research.data.accounting import (
     accounting_items,
     as_of,
     first_reported,
@@ -164,7 +164,7 @@ def test_the_accounts_do_not_depend_on_the_order_the_facts_arrive_in() -> None:
 
 
 def test_an_earnings_surprise_is_a_beat_against_the_companys_own_pattern() -> None:
-    from equity_research.research.accounting import earnings_surprise  # noqa: PLC0415
+    from equity_research.data.accounting import earnings_surprise  # noqa: PLC0415
 
     ends = pd.to_datetime(
         # a 52-53 week year: the quarter ends drift a few days from one year to the next

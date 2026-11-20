@@ -106,41 +106,42 @@ def test_a_norgate_build_from_nothing_and_a_repeat(scratch: Engine) -> None:
     first = load_norgate(scratch, start=START, end=END, client=client)
     assert first["universe"]["created"] == 4
     assert first["universe"]["index_levels"] == {"attached": 0, "created": 3}
-    assert _one(scratch, "SELECT COUNT(*) FROM ref.listing") == 7  # 4 securities + 3 index levels
-    assert _one(scratch, "SELECT COUNT(*) FROM ref.index_definition WHERE level_listing_id IS NOT NULL") == 3
-    assert _one(scratch, "SELECT COUNT(*) FROM ref.index_membership WHERE vendor_id = 5") == 4
+    assert _one(scratch, "SELECT COUNT(*) FROM core.listing") == 7  # 4 securities + 3 index levels
+    assert _one(scratch, "SELECT COUNT(*) FROM equity.index_definition WHERE level_listing_id IS NOT NULL") == 3
+    assert _one(scratch, "SELECT COUNT(*) FROM equity.index_membership WHERE vendor_id = 5") == 4
 
     # OLD left in February: delisted, its ticker valid only while it traded
-    assert str(_one(scratch, "SELECT delisted_on FROM ref.listing WHERE name = 'OLD-202402 Inc'")) == "2024-02-15"
-    old_spell = "SELECT end_date FROM ref.index_membership m JOIN ref.listing l ON l.listing_id = m.listing_id "
+    assert str(_one(scratch, "SELECT delisted_on FROM core.listing WHERE name = 'OLD-202402 Inc'")) == "2024-02-15"
+    old_spell = "SELECT end_date FROM equity.index_membership m JOIN core.listing l ON l.listing_id = m.listing_id "
     assert str(_one(scratch, old_spell + "WHERE l.name = 'OLD-202402 Inc'")) == "2024-02-16"  # not a member for ever
     assert first["universe"]["memberships_closed_at_delisting"] == 1
-    ticker_end = "SELECT valid_to FROM ref.identifier WHERE id_type = 'TICKER' AND value = 'OLD'"
+    ticker_end = "SELECT valid_to FROM core.identifier WHERE id_type = 'TICKER' AND value = 'OLD'"
     assert str(_one(scratch, ticker_end)) == "2024-02-16"
 
     # real prices: AAA at 200 before its split, the split recorded as 2-for-1
     aaa = (
-        "(SELECT entity_id FROM ref.identifier WHERE entity_type = 'listing' AND id_type = 'NORGATE' AND value = '101')"
+        "(SELECT entity_id FROM core.identifier "
+        "WHERE entity_type = 'listing' AND id_type = 'NORGATE' AND value = '101')"
     )
     assert (
-        _one(scratch, f"SELECT [close] FROM market.price_bar WHERE listing_id = {aaa} AND trade_date = '2024-01-31'")
+        _one(scratch, f"SELECT [close] FROM equity.price_bar WHERE listing_id = {aaa} AND trade_date = '2024-01-31'")
         == 200
     )
-    split = f"SELECT ratio FROM market.corporate_action WHERE listing_id = {aaa} AND action_type = 'split'"
+    split = f"SELECT ratio FROM equity.corporate_action WHERE listing_id = {aaa} AND action_type = 'split'"
     assert float(_one(scratch, split)) == pytest.approx(2.0)
-    assert _one(scratch, "SELECT COUNT(*) FROM market.corporate_action WHERE action_type = 'cash_dividend'") == 1
-    level = "SELECT COUNT(*) FROM market.price_bar p JOIN ref.identifier i ON i.entity_id = p.listing_id "
+    assert _one(scratch, "SELECT COUNT(*) FROM equity.corporate_action WHERE action_type = 'cash_dividend'") == 1
+    level = "SELECT COUNT(*) FROM equity.price_bar p JOIN core.identifier i ON i.entity_id = p.listing_id "
     assert _one(
         scratch, level + "WHERE i.entity_type = 'listing' AND i.id_type = 'TICKER' AND i.value = '$SPX'"
     ) == len(DAYS)
 
     # GICS and domicile from Norgate
-    assert _one(scratch, "SELECT COUNT(*) FROM ref.classification WHERE vendor_id = 5 AND scheme = 'GICS'") == 4
-    assert _one(scratch, "SELECT COUNT(*) FROM ref.issuer WHERE domicile_country = 'IE'") == 1
+    assert _one(scratch, "SELECT COUNT(*) FROM equity.classification WHERE vendor_id = 5 AND scheme = 'GICS'") == 4
+    assert _one(scratch, "SELECT COUNT(*) FROM core.issuer WHERE domicile_country = 'IE'") == 1
 
     again = load_norgate(scratch, start=START, end=END, client=client)
     assert again["universe"]["known"] == 4 and again["universe"]["created"] == 0
     assert again["universe"]["index_levels"] == {"attached": 3, "created": 0}
     assert again["prices"]["price_bars"]["inserted"] == 0
-    assert _one(scratch, "SELECT COUNT(*) FROM ref.listing") == 7
-    assert _one(scratch, "SELECT COUNT(*) FROM ref.index_membership WHERE vendor_id = 5") == 4
+    assert _one(scratch, "SELECT COUNT(*) FROM core.listing") == 7
+    assert _one(scratch, "SELECT COUNT(*) FROM equity.index_membership WHERE vendor_id = 5") == 4

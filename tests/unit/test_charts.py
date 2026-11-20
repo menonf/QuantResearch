@@ -8,7 +8,7 @@ import matplotlib as mpl
 
 mpl.use("Agg")
 
-from equity_research import charts
+from research_core import charts
 
 DAYS = pd.bdate_range("2020-01-01", periods=300)
 R = pd.Series(np.random.default_rng(0).normal(0.0004, 0.01, 300), index=DAYS)
@@ -24,6 +24,3 @@ def test_every_chart_draws_with_labels_and_a_legend_for_several_series() -> None
     charts.drawdown(R, "Below the best")
     charts.yearly_bars(pd.DataFrame({"A": [0.1, -0.05], "B": [0.08, 0.02]}, index=[2020, 2021]), "Years")
     charts.ranked_bars(pd.Series({"x": 0.3, "y": -0.1}), "Ranked", percent=True)
-    grid = np.linspace(-1, 1, 5)
-    panels = charts.fit_panels(grid, grid, pd.DataFrame({"a": grid, "b": -grid, "c": grid}, index=grid), "Fits")
-    assert [ax.get_title(loc="left") for ax in panels.axes if ax.get_visible()] == ["a", "b", "c"]

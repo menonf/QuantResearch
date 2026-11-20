@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import latent as lt
+from equity_research.ml import latent as lt
 
 MONTHS = pd.date_range("2008-01-31", "2016-12-31", freq="ME")
 
@@ -65,7 +65,7 @@ def test_ipca_recovers_a_two_factor_model_out_of_sample() -> None:
 
 def test_conditional_autoencoder_learns_the_factors() -> None:
     pytest.importorskip("torch")
-    from equity_research.research import autoencoder as ae  # noqa: PLC0415
+    from equity_research.ml import autoencoder as ae  # noqa: PLC0415
 
     months = _months(2, n=200)
     out = ae.walk_forward(months, 2, first_test=2016, last_test=2016, epochs=40, patience=8)

@@ -180,7 +180,7 @@ def companies(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def listings(attrs: pd.DataFrame, classes: pd.DataFrame | None = None) -> pd.DataFrame:
-    """The frame :func:`~equity_research.ingest.identity.ensure_listings` takes, one row per RIC.
+    """The frame :func:`~research_core.data.identity.ensure_listings` takes, one row per RIC.
 
     A share's company is its CUSIP's first six characters (GOOG and GOOGL, BRK.A and BRK.B share one) in
     ``issuer_anchor``. A company registered abroad has no CUSIP (Linde, Aon: Irish ISINs), so ``issuer_isin``
@@ -313,23 +313,60 @@ def current_currencies(raw: pd.DataFrame) -> pd.DataFrame:
 QUOTE_SWITCH_MIN_MOVE = float(np.log(5.0))
 #: ... that the exchange rate explains to within this (log): the price in pounds the day before and the day after.
 QUOTE_SWITCH_TOLERANCE = float(np.log(1.3))
+#: Below a penny a day's 5x move is a near-worthless line's noise, not a change of quote currency (Quarterly High
+#: Income Trust, 2002: 0.02 to 0.50 matched pence per lari, and four years of pence were read as lari).
+QUOTE_SWITCH_MIN_POUNDS = 0.01
+#: A move the line's own share count explains to within this (log) is a capital change, whatever the exchange rate
+#: says: Durlacher's (now Panmure Liberum) 1-for-140 consolidation of November 2002, which LSEG lacks, moved its price
+#: x108 - pounds to pence - while its shares fell from 570m to 4m. Counts are monthly, hence the width.
+QUOTE_COUNT_TOLERANCE = float(np.log(2.0))
+
+
+def count_ratios(counts: pd.Series, days: pd.DatetimeIndex) -> np.ndarray:
+    """Per day: the first share count on or after it over the last before it, each within :data:`SHARE_COUNT_DAYS`.
+
+    ``counts``: shares outstanding by ``as_of_date``. NaN where either side has no count.
+    """
+    out = np.full(len(days), np.nan)
+    s = counts[counts > 0].sort_index()
+    if s.empty:
+        return out
+    dates = pd.DatetimeIndex(pd.to_datetime(s.index))
+    values = s.to_numpy(dtype=float)
+    after = dates.searchsorted(days, side="left")  # first count on or after the day
+    before = after - 1  # last count before it
+    near = pd.Timedelta(days=SHARE_COUNT_DAYS)
+    ok = (before >= 0) & (after < len(dates))
+    i = np.flatnonzero(ok)
+    a, b = after[i], before[i]
+    close_enough = (dates[a] - days[i] <= near) & (days[i] - dates[b] <= near)
+    out[i[close_enough]] = values[a[close_enough]] / values[b[close_enough]]
+    return out
 
 
 def quote_currencies(
-    bars: pd.DataFrame, last: str, pounds_per_unit: pd.DataFrame, quiet: set[pd.Timestamp] | None = None
+    bars: pd.DataFrame,
+    last: str,
+    pounds_per_unit: pd.DataFrame,
+    quiet: set[pd.Timestamp] | None = None,
+    counts: pd.Series | None = None,
 ) -> pd.Series:
     """Each bar's currency, for one London listing whose history LSEG answers as quoted, with no currency.
 
     ``bars``: ``[trade_date, close]`` in date order; ``last``: the latest bar's currency (today's quote, ``GBX`` when
     LSEG has none - a retired line); ``pounds_per_unit``: ``date x currency`` (``GBX``, ``GBP``, ``USD``...) - the value
-    in pounds of one unit; ``quiet``: days a capital change explains (a 1-for-100 consolidation is no switch to pence).
+    in pounds of one unit; ``quiet``: days a capital change explains (a 1-for-100 consolidation is no switch to pence);
+    ``counts``: the line's shares outstanding by date, which explain the capital changes LSEG has no action for.
     Walking back from the latest bar, a day whose move is more than 5x and is the exchange rate between two currencies
-    to within 30% starts the earlier currency's run - the price in pounds was the same either side.
+    to within 30% starts the earlier currency's run - the price in pounds was the same either side - unless the price
+    is under a penny (:data:`QUOTE_SWITCH_MIN_POUNDS`) or the share count moved the other way to match
+    (:data:`QUOTE_COUNT_TOLERANCE`).
     """
     quiet = quiet or set()
     days = pd.DatetimeIndex(pd.to_datetime(bars["trade_date"]))
     close = bars["close"].to_numpy(dtype=float)
     rates = pounds_per_unit.sort_index().reindex(days, method="ffill")
+    shares = count_ratios(counts, days) if counts is not None else np.full(len(days), np.nan)
     out = [last] * len(close)
     current = last
     for i in range(len(close) - 1, 0, -1):
@@ -340,6 +377,10 @@ def quote_currencies(
         if abs(move) <= QUOTE_SWITCH_MIN_MOVE:
             continue
         here = rates.iloc[i]
+        if not close[i] * here[current] >= QUOTE_SWITCH_MIN_POUNDS:
+            continue
+        if shares[i] > 0 and abs(move + float(np.log(shares[i]))) < QUOTE_COUNT_TOLERANCE:
+            continue
         best: tuple[float, str] | None = None
         for before in rates.columns:
             if before == current or not (here[before] > 0 and here[current] > 0):

@@ -2,9 +2,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import allocation as al
-from equity_research.research import assessment as asm
-from equity_research.research.backtest import BacktestResult
+from equity_research.ml import assessment as asm
+from research_core.analytics.risk import statistics as risk_stats
+from research_core.engine import allocation as al
+from research_core.engine.backtest import BacktestResult
 
 DAYS = pd.bdate_range("2018-01-01", "2020-12-31")
 NAMES = list(range(1, 41))
@@ -96,7 +97,7 @@ def test_break_even_and_tail_risk() -> None:
     assert even["break-even multiple"] == pytest.approx(2.0, rel=0.05)
     assert even["cost charged (bp)"] == pytest.approx(100.0)
     r = pd.Series(np.tile(np.r_[np.full(98, 0.001), -0.05, -0.05], 10), index=pd.RangeIndex(1000))
-    tails = asm.tail_risk(r, confidence=0.99)  # 2 % of days lose 5 %: the worst 1 % all do
+    tails = risk_stats.tail_risk(r, confidence=0.99)  # 2 % of days lose 5 %: the worst 1 % all do
     assert tails["VaR"] == pytest.approx(0.05) and tails["CVaR"] == pytest.approx(0.05)
 
 
@@ -138,7 +139,7 @@ def test_reality_check_and_rademacher_bounds() -> None:
 
 
 def test_ml_strategy_measures_long_only_against_the_index_and_long_short_against_cash() -> None:
-    from equity_research.research import ml_strategy as ms  # noqa: PLC0415
+    from equity_research.ml import ml_strategy as ms  # noqa: PLC0415
 
     rng = np.random.default_rng(7)
     bench = pd.Series(rng.normal(0.0004, 0.01, len(DAYS)), index=DAYS)

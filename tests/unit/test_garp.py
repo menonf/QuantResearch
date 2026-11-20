@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import garp
-from equity_research.research.data import per_share_growth
+from equity_research.data.universe import per_share_growth
+from equity_research.strategies import garp
 
 DAY = pd.DatetimeIndex([pd.Timestamp("2015-05-29")])
 NAMES = list(range(1, 41))

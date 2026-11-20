@@ -2,16 +2,26 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import backtest as bt
-from equity_research.research.backtest import active_performance, decile_returns, performance, run_backtest
-from equity_research.research.factors import combine, cross_sectional_z, magic_formula, momentum, net_issuance, quality
-from equity_research.research.portfolio import buffered_selection, quantile_book, rebalance_dates, weighted_by
+from equity_research.strategies.factors import (
+    combine,
+    cross_sectional_z,
+    magic_formula,
+    momentum,
+    net_issuance,
+    quality,
+)
+from research_core.analytics.performance import metrics as bt
+from research_core.analytics.performance.metrics import active_performance, decile_returns, performance
+from research_core.data.calendars import rebalance_dates
+from research_core.engine.backtest import run_backtest
+from research_core.engine.finish import deflated_active
+from research_core.engine.portfolio import buffered_selection, quantile_book, weighted_by
 
 DAYS = pd.bdate_range("2024-01-01", periods=6)
 
 
 def _ratios(rows: dict[int, dict[str, float]]) -> pd.DataFrame:
-    """``(date, listing_id)`` x ratios on one day, as :func:`~equity_research.research.ratios.ratio_panel` gives."""
+    """``(date, listing_id)`` x ratios on one day, as :func:`~equity_research.data.ratios.ratio_panel` gives."""
     frame = pd.DataFrame.from_dict(rows, orient="index")
     frame.index = pd.MultiIndex.from_product([DAYS[:1], frame.index], names=["date", "listing_id"])
     return frame
@@ -145,7 +155,7 @@ def test_a_benchmark_with_stale_daily_closes_still_measures_beta_one() -> None:
 
 
 def test_residual_momentum_ranks_a_companys_own_run_not_its_beta() -> None:
-    from equity_research.research.factors import residual_momentum  # noqa: PLC0415
+    from equity_research.strategies.factors import residual_momentum  # noqa: PLC0415
 
     rng = np.random.default_rng(5)
     days = pd.bdate_range("2017-01-02", "2020-12-31")
@@ -181,7 +191,7 @@ def test_deciles_show_where_a_score_earns() -> None:
 
 
 def test_profit_backed_by_cash_scores_above_profit_made_of_accruals() -> None:
-    from equity_research.research.factors import accruals, cash_flow_yield  # noqa: PLC0415
+    from equity_research.strategies.factors import accruals, cash_flow_yield  # noqa: PLC0415
 
     ratios = _ratios(
         {
@@ -214,3 +224,12 @@ def test_periods_against_measures_the_book_before_and_from_the_hold_out() -> Non
     assert abs(before["active_return"]) < 1e-12  # the same returns: nothing added
     assert after["active_return"] > 0.1
     assert after["benchmark_cagr"] == pytest.approx(before["cagr"])
+
+
+def test_deflating_by_more_trials_lowers_the_probability() -> None:
+    days = pd.bdate_range("2015-01-01", "2020-12-31")
+    rng = np.random.default_rng(4)
+    benchmark = pd.Series(rng.normal(0.0004, 0.01, len(days)), index=days)
+    net = benchmark + rng.normal(0.0001, 0.002, len(days))
+    ten, twenty = deflated_active(net, benchmark, 0.4, 10), deflated_active(net, benchmark, 0.4, 20)
+    assert 0 < twenty < ten < 1

@@ -2,10 +2,10 @@
 
 What is stored is what was **reported**, with every version:
 
-* each 10-K / 10-Q (and amendment) becomes a ``fund.filing`` (accession number, form, report period, fiscal year /
+* each 10-K / 10-Q (and amendment) becomes a ``equity.filing`` (accession number, form, report period, fiscal year /
   period, filing date as ``published_at``); a filing's report period is the latest ``end`` among its USD facts, or
   among its share counts for a filing that reports no amounts (an amendment of the cover page);
-* each XBRL fact becomes a ``fund.financial_fact`` of a canonical ``item`` (see :data:`ITEM_TAGS`) with its period:
+* each XBRL fact becomes a ``equity.financial_fact`` of a canonical ``item`` (see :data:`ITEM_TAGS`) with its period:
   ``I`` an instant (balance sheet), ``Q`` about three months, ``FY`` about a year, ``YTD`` any other duration
   (6 or 9 months) - quarters missing as three-month figures are derived from these when read, not here;
 * a fact whose period ends after the filing that reports it is dropped (a filer's tagging slip);

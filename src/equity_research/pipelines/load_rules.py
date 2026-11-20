@@ -4,7 +4,7 @@
 
 Steps:
 
-1. read each file of :data:`~equity_research.research.rules.RULE_FILES` and check it (known rule types, a number for
+1. read each file of :data:`~equity_research.strategies.rules.RULE_FILES` and check it (known rule types, a number for
    every rule, no rule twice);
 2. a set not yet in the database is inserted with its rules and their checksum;
 3. a set already there keeps its rules when its checksum is the file's - only its description and source follow
@@ -23,9 +23,10 @@ from collections.abc import Iterable
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.research.rules import RULE_FILES, RuleFile, checksum, read_rules
+from equity_research import ASSET_CLASS
+from equity_research.strategies.rules import RULE_FILES, RuleFile, checksum, read_rules
+from research_core.data import ops
+from research_core.data.db import schema
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ def load_rules(engine: Engine, files: Iterable[RuleFile] | None = None) -> dict[
                     sa.insert(s)
                     .values(
                         code=spec.code,
+                        asset_class=ASSET_CLASS,
                         strategy=spec.strategy,
                         description=spec.description,
                         source=spec.source,

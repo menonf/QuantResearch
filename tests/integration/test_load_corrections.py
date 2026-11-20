@@ -1,4 +1,4 @@
-"""The repository's corrections reach ``market.corporate_action`` under vendor ``repository``, once."""
+"""The repository's corrections reach ``equity.corporate_action`` under vendor ``repository``, once."""
 
 from __future__ import annotations
 
@@ -10,11 +10,12 @@ import pytest
 import sqlalchemy as sa
 from conftest import scratch_database
 
-from equity_research.db import schema
-from equity_research.db.upsert import upsert
-from equity_research.ingest.identity import ensure_listings
+from equity_research.data import schema
 from equity_research.pipelines.load_corrections import load_corrections
-from equity_research.raw.store import land_frame
+from research_core.data.db import schema as core_schema
+from research_core.data.db.upsert import upsert
+from research_core.data.identity import ensure_listings
+from research_core.data.raw_store import land_frame
 
 pytestmark = pytest.mark.integration
 
@@ -39,7 +40,7 @@ def _listings(engine: sa.Engine) -> dict[str, int]:
         bars = pd.DataFrame(
             {
                 "listing_id": [ids["GOOGL.OQ"], ids["GOOG.OQ"]],
-                "vendor_id": schema.vendor_id("refinitiv"),
+                "vendor_id": core_schema.vendor_id("refinitiv"),
                 "trade_date": dt.date(2014, 4, 3),
                 "close": [571.50, 569.74],
             }
@@ -58,7 +59,7 @@ def test_corrections_are_written_once_and_what_cannot_be_is_reported(tmp_path: P
         with engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
-                    "SELECT a.listing_id, a.action_type, a.ratio, b.status FROM market.corporate_action a "
+                    "SELECT a.listing_id, a.action_type, a.ratio, b.status FROM equity.corporate_action a "
                     "JOIN ingest.batch b ON b.batch_id = a.batch_id WHERE a.vendor_id = 9 ORDER BY a.listing_id"
                 )
             ).all()

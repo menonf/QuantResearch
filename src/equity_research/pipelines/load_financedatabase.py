@@ -4,10 +4,10 @@
 
 1. its equities file (a bz2-compressed CSV from the project's GitHub, or the same file through the jsDelivr CDN) is
    landed in the raw zone as it came;
-2. each US listing is matched to one of ours (:func:`~equity_research.ingest.identity.match_listings`: ISIN, then
+2. each US listing is matched to one of ours (:func:`~research_core.data.identity.match_listings`: ISIN, then
    CUSIP, then ticker today) - unmatched ones are counted, never created (it has no history to give them);
 3. for matched listings: its symbol (a Yahoo symbol) and FIGI become identifiers, its sector labels a
-   ``ref.classification`` row under its own scheme (``FD`` - GICS-like names, not GICS), and its country fills a
+   ``equity.classification`` row under its own scheme (``FD`` - GICS-like names, not GICS), and its country fills a
    company's ``domicile_country`` where no other source has.
 """
 
@@ -23,16 +23,16 @@ import requests
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import upsert
 from equity_research.ingest.classification import record as record_classification
-from equity_research.ingest.identity import OPEN_START, US_MARKETS, add_identifiers, match_listings
 from equity_research.ingest.vendors.financedatabase import VENDOR
 from equity_research.ingest.vendors.financedatabase.normalize import us_equities
-from equity_research.raw.store import land_file, land_frame, mark
-from equity_research.settings import get_settings
+from research_core.data import ops
+from research_core.data.db import schema
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import upsert
+from research_core.data.identity import OPEN_START, US_MARKETS, add_identifiers, match_listings
+from research_core.data.raw_store import land_file, land_frame, mark
+from research_core.settings import get_settings
 
 log = logging.getLogger(__name__)
 

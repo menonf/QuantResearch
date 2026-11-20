@@ -14,15 +14,15 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from equity_research.db import engine as db_engine
-from equity_research.db import migrate
 from equity_research.ingest.vendors.refinitiv import fields as f
 from equity_research.ingest.vendors.refinitiv.client import LsegClient, ThrottledError
 from equity_research.pipelines.load_estimates import STEPS as STEPS_E
 from equity_research.pipelines.load_estimates import load_estimates
 from equity_research.pipelines.load_lseg import load_lseg
 from equity_research.pipelines.refresh import written
-from equity_research.settings import get_settings
+from research_core.data.db import engine as db_engine
+from research_core.data.db import migrate
+from research_core.settings import get_settings
 
 pytestmark = pytest.mark.integration
 
@@ -244,16 +244,17 @@ def test_a_throttled_load_resumes_and_a_repeat_does_nothing(scratch: Engine, tmp
     assert done["complete"], done
     assert done["universe"]["reused"] >= 5  # the five answered before the stop were read back, not asked again
 
-    assert _count(scratch, "SELECT COUNT(*) FROM ref.listing") == 9  # 5 share lines (one retired) + 4 index levels
+    assert _count(scratch, "SELECT COUNT(*) FROM core.listing") == 9  # 5 share lines (one retired) + 4 index levels
     renamed = (
-        "SELECT COUNT(DISTINCT entity_id) FROM ref.identifier WHERE id_type = 'RIC' AND value IN ('CCC.N', 'CCO.N^A24')"
+        "SELECT COUNT(DISTINCT entity_id) FROM core.identifier "
+        "WHERE id_type = 'RIC' AND value IN ('CCC.N', 'CCO.N^A24')"
     )
     assert _count(scratch, renamed) == 1  # one listing carries both RICs
-    assert _count(scratch, "SELECT COUNT(*) FROM ref.universe WHERE benchmark_listing_id IS NOT NULL") == 4
+    assert _count(scratch, "SELECT COUNT(*) FROM equity.universe WHERE benchmark_listing_id IS NOT NULL") == 4
     # the renamed line left under its old RIC and joined under its new one the same day: one unbroken spell
-    assert _count(scratch, "SELECT COUNT(*) FROM ref.index_membership") == 5
-    assert _count(scratch, "SELECT COUNT(*) FROM ref.index_membership WHERE batch_id IS NULL") == 0
-    of_retired = f"JOIN ref.identifier i ON i.entity_type = 'listing' AND i.value = '{RETIRED}'"
+    assert _count(scratch, "SELECT COUNT(*) FROM equity.index_membership") == 5
+    assert _count(scratch, "SELECT COUNT(*) FROM equity.index_membership WHERE batch_id IS NULL") == 0
+    of_retired = f"JOIN core.identifier i ON i.entity_type = 'listing' AND i.value = '{RETIRED}'"
     with scratch.connect() as c:
 
         def one(sql: str) -> Any:
@@ -261,41 +262,42 @@ def test_a_throttled_load_resumes_and_a_repeat_does_nothing(scratch: Engine, tmp
 
         assert (
             one(
-                f"SELECT CONVERT(VARCHAR(10), m.end_date, 23) FROM ref.index_membership m {of_retired} "
+                f"SELECT CONVERT(VARCHAR(10), m.end_date, 23) FROM equity.index_membership m {of_retired} "
                 "AND i.entity_id = m.listing_id"
             )
             == "2024-02-15"
         )
         split = c.execute(
             sa.text(
-                "SELECT ratio, CONVERT(VARCHAR(10), ex_date, 23) FROM market.corporate_action "
+                "SELECT ratio, CONVERT(VARCHAR(10), ex_date, 23) FROM equity.corporate_action "
                 "WHERE action_type = 'split'"
             )
         ).one()
         assert (split[0], split[1]) == (2.0, "2024-02-01")
         # actions are asked from the first price, not from START: momentum and returns there need them too
-        assert one("SELECT MIN(ex_date) FROM market.corporate_action").isoformat() == "2023-11-09"
+        assert one("SELECT MIN(ex_date) FROM equity.corporate_action").isoformat() == "2023-11-09"
         assert (
-            one(f"SELECT COUNT(*) FROM market.price_bar p {of_retired} AND i.entity_id = p.listing_id") > 0
+            one(f"SELECT COUNT(*) FROM equity.price_bar p {of_retired} AND i.entity_id = p.listing_id") > 0
         )  # its history
         delisted = one(
-            f"SELECT CONVERT(VARCHAR(10), l.delisted_on, 23) FROM ref.listing l {of_retired} "
+            f"SELECT CONVERT(VARCHAR(10), l.delisted_on, 23) FROM core.listing l {of_retired} "
             "AND i.entity_id = l.listing_id"
         )
         assert delisted == "2024-02-14"  # its last trading day
-        assert one("SELECT COUNT(*) FROM ref.classification WHERE sector = 'Energy' AND valid_to IS NULL") == 5
-        assert one("SELECT COUNT(*) FROM ref.issuer WHERE domicile_country = 'IE'") == 1  # registered abroad
-    assert _count(scratch, "SELECT COUNT(*) FROM market.share_count WHERE kind = 'float'") == 5
-    assert _count(scratch, "SELECT COUNT(*) FROM fund.financial_fact WHERE item = 'revenue'") == 5
+        assert one("SELECT COUNT(*) FROM equity.classification WHERE sector = 'Energy' AND valid_to IS NULL") == 5
+        assert one("SELECT COUNT(*) FROM core.issuer WHERE domicile_country = 'IE'") == 1  # registered abroad
+    assert _count(scratch, "SELECT COUNT(*) FROM equity.share_count WHERE kind = 'float'") == 5
+    assert _count(scratch, "SELECT COUNT(*) FROM equity.financial_fact WHERE item = 'revenue'") == 5
     # the yearly items, one field per request, dated by the year's announcement from the quarterly statements
     assert (
-        _count(scratch, "SELECT COUNT(*) FROM fund.financial_fact WHERE item = 'depreciation' AND period_type = 'FY'")
+        _count(scratch, "SELECT COUNT(*) FROM equity.financial_fact WHERE item = 'depreciation' AND period_type = 'FY'")
         == 5
     )
     assert (
-        _count(scratch, "SELECT COUNT(*) FROM fund.financial_fact WHERE item = 'loans_net' AND period_type = 'I'") == 5
+        _count(scratch, "SELECT COUNT(*) FROM equity.financial_fact WHERE item = 'loans_net' AND period_type = 'I'")
+        == 5
     )
-    assert _count(scratch, "SELECT COUNT(*) FROM market.price_bar WHERE vendor_id = 1") > 300
+    assert _count(scratch, "SELECT COUNT(*) FROM equity.price_bar WHERE vendor_id = 1") > 300
 
     repeat_client = FakeLseg()
     again = load_lseg(scratch, start=START, end=END, client=cast(LsegClient, repeat_client))
@@ -307,7 +309,7 @@ def test_a_throttled_load_resumes_and_a_repeat_does_nothing(scratch: Engine, tmp
 def test_the_loaded_database_copies_exactly_and_only_once(scratch: Engine, tmp_path: Path) -> None:
     from dataclasses import replace  # noqa: PLC0415
 
-    from equity_research.pipelines.copy_database import CopyRefusedError, copy_database  # noqa: PLC0415
+    from research_core.data.db.copy import CopyRefusedError, copy_database  # noqa: PLC0415
 
     target_db = replace(get_settings().database, name=f"{SCRATCH}_copy")
     db_engine.create_database(target_db)
@@ -415,10 +417,10 @@ def test_estimates_load_in_the_shares_of_their_date_and_resume(scratch: Engine) 
     periods = sum(len(p) for p in f.ESTIMATE_PERIODS.values())
     # five share lines (the renamed one asked under both RICs counts once) x two month ends (January and February;
     # the window ends on 29 March) x every measure and period
-    assert _count(scratch, "SELECT COUNT(*) FROM fund.estimate") == 5 * 2 * periods
-    aaa = "(SELECT entity_id FROM ref.identifier WHERE id_type = 'RIC' AND value = 'AAA.N')"
+    assert _count(scratch, "SELECT COUNT(*) FROM equity.estimate") == 5 * 2 * periods
+    aaa = "(SELECT entity_id FROM core.identifier WHERE id_type = 'RIC' AND value = 'AAA.N')"
     eps = (
-        "SELECT mean FROM fund.estimate WHERE measure = '{m}' AND period = 'FY1' "
+        "SELECT mean FROM equity.estimate WHERE measure = '{m}' AND period = 'FY1' "
         f"AND listing_id = {aaa} AND as_of_date = '{{d}}'"
     )
     with scratch.connect() as c:
@@ -429,13 +431,13 @@ def test_estimates_load_in_the_shares_of_their_date_and_resume(scratch: Engine) 
         assert one(eps.format(m="eps", d="2024-01-31")) == 4.0  # before the 2-for-1 split: twice today's figure
         assert one(eps.format(m="eps", d="2024-02-29")) == 2.0
         assert one(eps.format(m="revenue", d="2024-01-31")) == 2.0  # totals are not per share
-        actual = f"SELECT value FROM fund.estimate_actual WHERE measure = 'eps' AND listing_id = {aaa}"
+        actual = f"SELECT value FROM equity.estimate_actual WHERE measure = 'eps' AND listing_id = {aaa}"
         assert one(actual) == 8.0  # FY2023 in the shares of its year end
-        old = "(SELECT entity_id FROM ref.identifier WHERE id_type = 'RIC' AND value = 'OLD.N^B24')"
-        revised = f"SELECT COUNT(*) FROM fund.estimate_revision WHERE listing_id = {old}"
+        old = "(SELECT entity_id FROM core.identifier WHERE id_type = 'RIC' AND value = 'OLD.N^B24')"
+        revised = f"SELECT COUNT(*) FROM equity.estimate_revision WHERE listing_id = {old}"
         assert one(revised) == 2  # a member at the end of January only (FY1 and FY2), not after it left
         for table in ("estimate", "estimate_revision", "estimate_actual"):
-            assert one(f"SELECT COUNT(*) FROM fund.{table} WHERE batch_id IS NULL") == 0
+            assert one(f"SELECT COUNT(*) FROM equity.{table} WHERE batch_id IS NULL") == 0
     repeat = FakeEstimates()
     again = load_estimates(scratch, start=START, end=END, client=cast(LsegClient, repeat))
     assert again["complete"] and repeat.requests == 0
@@ -444,11 +446,11 @@ def test_estimates_load_in_the_shares_of_their_date_and_resume(scratch: Engine) 
 
 
 def test_a_stopped_step_still_reports_what_it_did(scratch: Engine) -> None:
-    from equity_research.db.schema import metadata  # noqa: PLC0415
+    from research_core.data.db.schema import SEEDED, metadata  # noqa: PLC0415
 
-    with scratch.begin() as conn:  # an empty database again: this test loads from nothing
+    with scratch.begin() as conn:  # an empty database again (but for its reference rows): this test loads from nothing
         for t in reversed(metadata.sorted_tables):
-            if t.name != "vendor":
+            if t not in SEEDED:
                 conn.execute(t.delete())
     stopped = load_lseg(scratch, start=START, end=END, client=cast(LsegClient, FakeLseg(throttle_after=30)))
     assert not stopped["complete"]
@@ -608,9 +610,9 @@ def test_london_loads_beside_new_york_without_touching_it(scratch: Engine) -> No
             return [tuple(r) for r in c.execute(sa.text(sql)).all()]
 
         london = rows(
-            "SELECT i.value, l.instrument_type, l.currency, s.incorporation_country FROM ref.listing l "
-            "JOIN ref.identifier i ON i.entity_type = 'listing' AND i.entity_id = l.listing_id AND i.id_type = 'RIC' "
-            "JOIN ref.issuer s ON s.issuer_id = l.issuer_id WHERE l.exchange_mic = 'XLON' ORDER BY i.value"
+            "SELECT i.value, l.instrument_type, l.currency, s.incorporation_country FROM core.listing l "
+            "JOIN core.identifier i ON i.entity_type = 'listing' AND i.entity_id = l.listing_id AND i.id_type = 'RIC' "
+            "JOIN core.issuer s ON s.issuer_id = l.issuer_id WHERE l.exchange_mic = 'XLON' ORDER BY i.value"
         )
         assert london == [
             ("AAA.L", "equity", "GBX", "GB"),
@@ -618,41 +620,43 @@ def test_london_loads_beside_new_york_without_touching_it(scratch: Engine) -> No
             ("TRST.L", "fund", "GBX", "GB"),  # an investment trust
         ]
         # one ticker, two markets: both recorded
-        tickers = rows("SELECT market FROM ref.identifier WHERE id_type = 'TICKER' AND value = 'AAA' ORDER BY market")
+        tickers = rows("SELECT market FROM core.identifier WHERE id_type = 'TICKER' AND value = 'AAA' ORDER BY market")
         assert tickers == [("GB",), ("US",)]
-        assert rows("SELECT COUNT(*) FROM ref.identifier WHERE entity_type = 'issuer' AND id_type = 'PERMID'") == [(3,)]
+        assert rows("SELECT COUNT(*) FROM core.identifier WHERE entity_type = 'issuer' AND id_type = 'PERMID'") == [
+            (3,)
+        ]
         currencies = rows(
-            "SELECT DISTINCT l.instrument_type, p.currency FROM market.price_bar p "
-            "JOIN ref.listing l ON l.listing_id = p.listing_id "
+            "SELECT DISTINCT l.instrument_type, p.currency FROM equity.price_bar p "
+            "JOIN core.listing l ON l.listing_id = p.listing_id "
             "WHERE (l.exchange_mic = 'XLON' OR l.currency = 'GBP') AND l.instrument_type <> 'fx' "
             "ORDER BY 1, 2"
         )
         assert currencies == [("equity", "GBX"), ("fund", "GBX"), ("index", "GBP")]  # shares in pence, levels in pounds
-        assert rows("SELECT currency, amount FROM market.corporate_action WHERE currency = 'GBP'") == [("GBP", 0.25)]
+        assert rows("SELECT currency, amount FROM equity.corporate_action WHERE currency = 'GBP'") == [("GBP", 0.25)]
         revenue = rows(
-            "SELECT period_type, value, unit FROM fund.financial_fact f "
-            "JOIN ref.listing l ON l.issuer_id = f.issuer_id "
+            "SELECT period_type, value, unit FROM equity.financial_fact f "
+            "JOIN core.listing l ON l.issuer_id = f.issuer_id "
             "WHERE l.exchange_mic = 'XLON' AND f.item = 'revenue' AND l.instrument_type = 'equity' "
             "GROUP BY period_type, value, unit ORDER BY period_type"
         )
         assert revenue == [("FY", 200.0, "GBP"), ("YTD", 100.0, "GBP")]  # the second half is in the year
         # the pound in dollars, day by day: what research turns dividends declared abroad into pounds with
         fx = rows(
-            "SELECT l.currency, MIN(p.currency), COUNT(*) FROM ref.listing l JOIN market.price_bar p "
+            "SELECT l.currency, MIN(p.currency), COUNT(*) FROM core.listing l JOIN equity.price_bar p "
             "ON p.listing_id = l.listing_id WHERE l.instrument_type = 'fx' GROUP BY l.currency ORDER BY l.currency"
         )
         days = len(pd.bdate_range(START, END))
         assert fx == [("EUR", "USD", days), ("GBP", "USD", days)]  # euros: a currency London lines are quoted in
         # a float with no joiner event is a member from its first trade, not from the start of the window
         spells = rows(
-            "SELECT m.start_date FROM ref.index_membership m JOIN ref.identifier i ON i.entity_type = 'listing' "
+            "SELECT m.start_date FROM equity.index_membership m JOIN core.identifier i ON i.entity_type = 'listing' "
             "AND i.entity_id = m.listing_id AND i.id_type = 'RIC' AND i.value = 'MMM.L'"
         )
         assert spells == [(dt.date(2024, 2, 1),)]
         # a consolidation LSEG does not report, confirmed by the share count once the shares step has run
         splits = rows(
-            "SELECT a.ex_date, a.ratio FROM market.corporate_action a "
-            "JOIN ref.identifier i ON i.entity_type = 'listing' "
+            "SELECT a.ex_date, a.ratio FROM equity.corporate_action a "
+            "JOIN core.identifier i ON i.entity_type = 'listing' "
             "AND i.entity_id = a.listing_id AND i.id_type = 'RIC' AND i.value = 'AAA.L' WHERE a.action_type = 'split'"
         )
         assert splits == [(dt.date(2024, 2, 15), 0.1)]

@@ -9,11 +9,11 @@ import pytest
 import sqlalchemy as sa
 from conftest import scratch_database
 
+from equity_research.data import artifacts as store
+from equity_research.data.cache import ResearchCache
 from equity_research.pipelines import load_rules as pipe
-from equity_research.research import barings_garp as bg
-from equity_research.research import rules as ru
-from equity_research.research import store
-from equity_research.research.cache import ResearchCache
+from equity_research.strategies import barings_garp as bg
+from equity_research.strategies import rules as ru
 
 pytestmark = pytest.mark.integration
 

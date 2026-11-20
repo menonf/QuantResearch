@@ -2,9 +2,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import indices as ix
-from equity_research.research.indices import cap_weighted, equal_weighted, segments, tracking
-from equity_research.research.panels import splits_between
+from equity_research.analytics.indices import cap_weighted, equal_weighted, segments
+from equity_research.data.panels import splits_between
+from research_core.analytics.performance import tracking as ix
+from research_core.analytics.performance.tracking import tracking
 
 DAYS = pd.to_datetime(["2024-03-27", "2024-03-28", "2024-04-01", "2024-04-02"])
 

@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from equity_research.research.compare import agreement, pair_ratios
-from equity_research.research.ratios import RATIOS
+from equity_research.data.compare import agreement, pair_ratios
+from equity_research.data.ratios import RATIOS
 
 METRIC = next(iter(RATIOS))
 

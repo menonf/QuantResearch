@@ -1,6 +1,6 @@
 """Load analysts' estimates (I/B/E/S, through LSEG): consensus history, reported actuals and revision counts.
 
-    report = load_estimates(engine)                              # 2005 to the last month end: ~3,200 requests
+    report = load_estimates(engine)                              # 2000 to the last month end
     report = refresh_estimates(engine)                           # the month ends since the newest we hold, if any
     report = load_estimates(engine, market="UK")                 # London's listings, in pounds
 
@@ -16,7 +16,7 @@ Steps (each needs the listings ``load_lseg`` created, and uses its splits):
 
 **Per-share figures in the shares of their own date.** LSEG restates per-share estimates for every later split (Apple's
 2015 consensus comes back divided by its 2020 split), so a figure fetched again after a split would change. Each is
-put back into the shares of its own date with LSEG's splits from ``market.corporate_action``
+put back into the shares of its own date with LSEG's splits from ``equity.corporate_action``
 (:func:`~.normalize.in_shares_of_their_date`), like prices, which are stored unadjusted.
 
 The load ends at the last month end before today (:func:`last_month_end`): consensus is monthly, and a fixed end keeps
@@ -39,16 +39,17 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import upsert
+from equity_research.data import schema
 from equity_research.ingest.vendors.refinitiv import VENDOR, rics
 from equity_research.ingest.vendors.refinitiv import fields as f
 from equity_research.ingest.vendors.refinitiv import normalize as norm
 from equity_research.ingest.vendors.refinitiv.client import LsegClient, RunawayRequestError, ThrottledError
 from equity_research.pipelines.load_lseg import MARKETS, START, LsegLoad, StepReport, buckets, market_rics
-from equity_research.raw.store import mark
+from research_core.data import ops
+from research_core.data.db import schema as core_schema
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import upsert
+from research_core.data.raw_store import mark
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ class EstimatesLoad(LsegLoad):
 
     def fetched_on(self, batch_id: int) -> pd.Timestamp:
         """The day a batch was fetched: the shares LSEG's per-share figures in it are quoted in."""
-        b = schema.batch
+        b = core_schema.batch
         with self.engine.connect() as conn:
             when = conn.execute(sa.select(b.c.fetched_at).where(b.c.batch_id == batch_id)).scalar_one()
         return pd.Timestamp(when).normalize()

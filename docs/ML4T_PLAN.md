@@ -56,7 +56,7 @@ latent factors -> causal -> model analysis -> backtest -> portfolio -> risk -> c
 | 16 Strategy simulation | in (P4) | our engine; DSR exists; add Rademacher Anti-Serum, White's Reality Check |
 | 17 Portfolio construction | in (P4) | mean-variance on the risk model, HRP, Kelly; deep allocation optional |
 | 18 Transaction costs | partly (P4, A6) | daily spread estimates and cost grids in P4; measured spreads and impact with A6's intraday data |
-| 19 Risk management | partly done (P4) | VaR, stress, factor exposure exist (notebook 4.3); add CVaR, overlays, drift |
+| 19 Risk management | partly done (P4) | VaR, stress, factor exposure exist (notebook 4.2); add CVaR, overlays, drift |
 | 20 Strategy synthesis | in (P4) | IC-to-Sharpe, Fundamental Law diagnostics, the hold-out step |
 | 21 RL execution, hedging | **out** | needs order books and options |
 | 22-23 RAG, knowledge graphs | later (P9) | on SEC filings; an LLM's cost and keys are a decision |
@@ -71,7 +71,7 @@ do not hold yet; where it can be had free or from LSEG they are scoped in "Other
 ## Design within the existing architecture
 
 * **No new architecture for P0-P7.** Pure functions in `research/`, a notebook per phase (in
-  `notebooks/6_machine_learning/`, numbered 6.1 on) that only sets parameters and shows results, unit tests on
+  `notebooks/equity/5_machine_learning/`, numbered 5.1 on) that only sets parameters and shows results, unit tests on
   synthetic panels with known answers.
 * **Artifact store** (`research/store.py`): labels, features and predictions as Parquet under
   `data/<db name>/research/<kind>/<name>-<hash>.parquet`, each with a sidecar recording its config, the data snapshot
@@ -134,7 +134,7 @@ Book: `06_strategy_definition/02_cv_foundations`, `07_defining_the_learning_task
 - [x] `research/evaluation.py` - IC series (rank and Pearson), Newey-West t-statistics, IC decay by horizon, quantile
       spreads, turnover and rank autocorrelation, Benjamini-Hochberg false-discovery control, a triage ledger
 - [x] registry helper: register each point of a search as a trial (`registry.record_search`)
-- [x] Notebook 6.1 *ML research protocol*: feasibility (breadth by date, move against cost, the folds)
+- [x] Notebook 5.1 *ML research protocol*: feasibility (breadth by date, move against cost, the folds)
 
 ### P1 - Features (chapters 8, 9, 1)
 
@@ -146,7 +146,7 @@ Book: `08_financial_features/01-07`, `09_model_based_features/02-14`; case studi
       is not possible: our LSEG bars carry close and volume only (no high, low or open); Roll's spread needs closes
 - [x] `research/model_features.py` - GARCH(1,1), HAR volatility, fractional differencing, Kalman trend, HMM regimes,
       structural breaks. No `ml` group needed: `arch` and `statsmodels` are base dependencies already
-- [x] Notebook 6.2 *features*: every feature through `evaluation.py`; the triage ledger; overlap with existing factors
+- [x] Notebook 5.2 *features*: every feature through `evaluation.py`; the triage ledger; overlap with existing factors
       and the risk model's styles
 
 ### P2 - Linear baseline (chapter 11)
@@ -155,7 +155,7 @@ Book: `11_ml_pipeline/01-08`; case studies `06_linear` / `05_linear`.
 
 - [x] ridge, lasso, elastic net, logistic, fitted per fold; nested tuning; coefficient stability
 - [x] conformal prediction intervals
-- [x] Notebook 6.3 *linear models*, against an equal-weighted composite of the surviving features
+- [x] Notebook 5.3 *linear models*, against an equal-weighted composite of the surviving features
 
 ### P3 - Gradient boosting (chapter 12)
 
@@ -163,7 +163,7 @@ Book: `12_gradient_boosting/02, 04, 07, 08, 11`; case studies `07_gbm` / `06_gbm
 
 - [x] LightGBM per fold; a grid over leaf profiles and losses, then Optuna (every trial registered)
 - [x] TreeSHAP through LightGBM's `pred_contrib`; conformal intervals
-- [x] Notebook 6.4 *gradient boosting*, against P2 and `ml.py`'s learned value
+- [x] Notebook 5.4 *gradient boosting*, against P2 and `ml.py`'s learned value
 
 ### P4 - From predictions to a strategy (chapters 16-20, 26)
 
@@ -171,7 +171,7 @@ Book: `16_strategy_simulation/11-14`, `17_portfolio_construction/02, 03, 04, 06`
 `19_risk_management/01, 02, 04, 07`, `20_strategy_synthesis/*`; case studies `16_backtest` to `22_strategy_analysis`.
 
 - [x] entry schemes: daily top-K long-short, monthly deciles - through `backtest.py` (new functions, rule 1). Top-K
-      is built (`allocation.top_k_book`) but not run: every signal is monthly, and 6.1 found a day's move covers 2.5
+      is built (`allocation.top_k_book`) but not run: every signal is monthly, and 5.1 found a day's move covers 2.5
       round trips
 - [x] allocators: equal, inverse volatility, mean-variance on the risk model's covariance, HRP, Kelly scaling
 - [x] cost grids and break-even costs; spread estimates from P1
@@ -179,8 +179,8 @@ Book: `16_strategy_simulation/11-14`, `17_portfolio_construction/02, 03, 04, 06`
 - [x] multiple testing beyond the DSR: Rademacher Anti-Serum, White's Reality Check (raw and studentised)
 - [x] Fundamental Law diagnostics (IC, breadth, transfer coefficient -> Sharpe)
 - [ ] the hold-out step: refit the chosen configuration on history before 2025, trade 2025 onward once - **left
-      for the owner's decision** (which strategy, if any; see 6.6's findings)
-- [x] Notebooks 6.5 *ML strategy* and 6.6 *strategy assessment*
+      for the owner's decision** (which strategy, if any; see 5.6's findings)
+- [x] Notebooks 5.5 *ML strategy* and 5.6 *strategy assessment*
 
 ### P5 - Latent factors (chapter 14)
 
@@ -189,7 +189,7 @@ Book: `14_latent_factors/01-08`; case studies `13a_pca`, `13b_ipca`, `08a-08d`.
 - [x] PCA and eigenportfolios, RP-PCA, IPCA
 - [x] conditional autoencoder (Gu, Kelly, Xiu), supervised autoencoder, SDF (dependency group `deep`). The supervised
       autoencoder is left out: a second network for little extra here; the SDF is each model's tangency portfolio
-- [x] Notebook 6.7 *latent factors*: explained variance and pricing errors set against the BFRE risk model
+- [x] Notebook 5.7 *latent factors*: explained variance and pricing errors set against the BFRE risk model
 
 ### P6 - Deep learning (chapters 13, 12)
 
@@ -197,7 +197,7 @@ Book: `13_dl_time_series/01, 03, 06, 10`, `12_gradient_boosting/03`; case studie
 
 - [x] NLinear, LSTM, TSMixer (weekly cadence first, for the CPU); a TabM-style MLP ensemble on the features
 - [x] fixed seeds, deterministic CPU training, every architecture registered
-- [x] Notebook 6.8 *deep learning*, against P2 and P3
+- [x] Notebook 5.8 *deep learning*, against P2 and P3
 
 ### P7 - Causal ML (chapter 15)
 
@@ -205,7 +205,7 @@ Book: `15_causal_estimation/03, 05, 11`; case studies `14_causal_dml` / `09_caus
 
 - [x] Double ML with cross-fitting (scikit-learn): the effect of 12-1 momentum with factor confounders
 - [x] factor-zoo validation of the features that survived P1
-- [x] Notebook 6.9 *causal ML*
+- [x] Notebook 5.9 *causal ML*
 
 ### P8 - New data: macro, insiders, institutional holdings (chapter 4) - needs a decision
 
@@ -221,15 +221,15 @@ Book: `04_fundamental_alternative_data/03, 06, 07, 10`.
 Book: `10_text_feature_engineering/03, 06, 08, 09`, `22_rag_financial_research/01`, `23_knowledge_graphs/08`.
 
 - [x] filing text from EDGAR in the raw zone; a document table with publication times - every 10-K, 10-Q and 8-K
-      listed in `fund.document` (with the acceptance instant and an 8-K's items); the text of the 10-Ks only (the
+      listed in `equity.document` (with the acceptance instant and an 8-K's items); the text of the 10-Ks only (the
       owner's choice), 47,540 of them since 2003
-- [x] Loughran-McDonald sentiment, year-on-year 10-K change ("Lazy Prices"), 8-K event extraction - notebook 6.10
-- [x] FinBERT - 45,547 reports scored on the GPU, in the rebuilt local database; notebook 6.10 rerun with it
+- [x] Loughran-McDonald sentiment, year-on-year 10-K change ("Lazy Prices"), 8-K event extraction - notebook 5.10
+- [x] FinBERT - 45,547 reports scored on the GPU, in the rebuilt local database; notebook 5.10 rerun with it
 - [ ] (not wanted, the owner's decision of 2026-11-08) RAG and knowledge graphs
 
 ### P10 - Optional
 
-- [x] synthetic data for stress-testing strategies (chapter 5): `synthetic.py`, notebook 6.11
+- [x] synthetic data for stress-testing strategies (chapter 5): `synthetic.py`, notebook 5.11
 - [ ] (not wanted, the owner's decision of 2026-11-08) minute bars for the whole S&P 1500 (beyond A6's 115 names at
       15 minutes): ~150 million rows a year, past SQL
       Server Express's 10 GB a database, so they would live in Parquet only - an exception to "every canonical row
@@ -257,10 +257,11 @@ ETFs (A1) fit what exists: `etf` is already an instrument type and their prices 
 by migration with gates and audit rules, migrated in every local database (rule 3):
 
 - [ ] instrument types `fx`, `future`, `perp`, `option` (listings without an issuer, as index levels are today)
-- [ ] `ref.contract` - a future's root, expiry, multiplier and sector; an option's underlying, expiry, strike and right
-- [ ] `market.intraday_bar` - timestamped bars (UTC start, interval) with bid/ask where the source gives them: crypto's
+- [ ] `<asset class>.contract` (each in the schema of the package that loads it, docs/ARCHITECTURE.md section 3) -
+      a future's root, expiry, multiplier and sector; an option's underlying, expiry, strike and right
+- [ ] `<asset class>.intraday_bar` - timestamped bars (UTC start, interval) with bid/ask where the source gives them: crypto's
       8-hour bars and A6's 15-minute bars (115 names x 26 bars x 252 days ~ 0.75 million rows a year: SQL is fine)
-- [ ] `market.rate` - per-instrument rates: perpetual funding, FX deposit rates; shares its design with P8's macro
+- [ ] `<asset class>.rate` - per-instrument rates: perpetual funding, FX deposit rates; shares its design with P8's macro
       series
 - [ ] calendars: 24/7 crypto, the FX week, exchange sessions for futures - research code takes the calendar and the
       periods per year as keywords (rule 8)
@@ -484,3 +485,28 @@ by migration with gates and audit rules, migrated in every local database (rule 
   thousandths. 6.10: twelve text discoveries, still only the acquisition-or-disposal 8-K count survives the controls
   (double ML t -3.51); FinBERT's tone points the expected way but is no discovery (IC +0.0057, t +1.60). The local
   registry and artifact store start afresh: 6.1 and 6.3-6.9, 6.11 still to rerun on the rebuilt data.
+* 2026-11-14 - the repository restructured into `research_core` (shared), `equity_research` and an empty
+  `fixed_income_research`; notebooks moved to `notebooks/equity/`. Nothing in a strategy or a result changed.
+  **Numbers in this log above this entry are the old ones**: this plan's notebooks were 6.1-6.11 and are now
+  5.1-5.11 (`notebooks/equity/5_machine_learning/`); the model-choice study's notebooks 5.1-5.3 (`5_analysis`)
+  and its modules `model_choice*.py` were removed (their runs stay in the registry, families
+  `ml_model_choice*`); the strategies are now 3.1 long-only, 3.2 extra signals, 3.3 learned value (was 3.4),
+  3.4 long-short (was 3.1); section 4 is 4.1 dashboard, 4.2 risk model, 4.3 screen. This plan's modules are in
+  `equity_research/ml/`, except `labels`, `evaluation` and `validation` (`research_core/analytics/signals/`),
+  `allocation` (`research_core/engine/`) and the artifact store (`research_core/data/artifact_store.py`, bound
+  to the returns method in `equity_research/data/artifacts.py`). Compatibility rule 1 holds for signatures and
+  defaults; only the import paths moved. Rule 8's keyword exists now: `periods_per_year` on `performance`,
+  `run_backtest`, `BacktestResult.metrics`, `tracking` and `yearly_tracking_error`, defaulting to 252.
+* 2026-11-17 - the multi-asset database layout (one Alembic history from `0001`; schemas `core`, `ingest`, `ops`,
+  `research`, `equity`, `fixed_income`) built as `quant_research_local` from the vendors, **with history from
+  2000** (prices from 1998 for momentum) instead of 2005; the run registry and artifact store start afresh again
+  (registry from run 1, so the deflated ratios count only the trials since). Every equity notebook, 2.1-5.11,
+  rerun on it without an error. The two discoveries of 5.2 are unchanged (share-count change t -3.53, ROCE
+  t +2.94); seven near-misses where there were nine (EBIT over assets and the GARCH forecast fell just past
+  p 0.05), so 5.9's factor zoo tests nine and two keep an effect (zero-return days, idiosyncratic volatility).
+  5.4: grid and Optuna now rank alike out of sample (+0.0276, +0.0274); the lead over learned value is t 1.86.
+  5.5: the best deflated ratio 43 % (composite long-short mean-variance). 5.6: White's Reality Check p 0.116 (was
+  0.049), boosting's IC decline significant (t -2.35). 5.8: NLinear +0.0121 (t 2.12), still below reversal.
+  5.10: eleven text discoveries (restatements dropped); acquisition-or-disposal count still the only survivor
+  (t -3.50). 3.3: the learned score now trails SPTM (-0.5 % a year; it led by 0.4 % on 14 November). Each
+  notebook's findings were rewritten to its new outputs.

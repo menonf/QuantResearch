@@ -4,10 +4,10 @@ import pytest
 
 pytest.importorskip("torch")
 
-from equity_research.research import deep as dp
-from equity_research.research import evaluation as ev
-from equity_research.research import linear as ln
-from equity_research.research import validation as va
+from equity_research.ml import deep as dp
+from equity_research.ml import linear as ln
+from research_core.analytics.signals import evaluation as ev
+from research_core.analytics.signals import validation as va
 
 NAMES = list(range(1, 81))
 

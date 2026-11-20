@@ -3,8 +3,8 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 
-from equity_research.db import schema
-from equity_research.db.upsert import upsert
+from research_core.data.db import schema
+from research_core.data.db.upsert import upsert
 
 pytestmark = pytest.mark.integration
 

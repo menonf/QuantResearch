@@ -2,9 +2,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from equity_research.research.cache import ResearchCache
-from equity_research.research.data import vendor_items
-from equity_research.research.reads import (
+from equity_research.data.cache import ResearchCache
+from equity_research.data.reads import (
     as_vendors,
     corporate_actions,
     financial_facts,
@@ -13,6 +12,7 @@ from equity_research.research.reads import (
     listing_issuers,
     outstanding_counts,
 )
+from equity_research.data.universe import vendor_items
 
 
 def _table(root: Path, name: str, frame: pd.DataFrame) -> None:
@@ -23,13 +23,13 @@ def _table(root: Path, name: str, frame: pd.DataFrame) -> None:
 def _cache(root: Path) -> ResearchCache:
     _table(
         root,
-        "ref.vendor",
+        "core.vendor",
         pd.DataFrame({"vendor_id": [1, 2], "vendor_code": ["refinitiv", "sec"], "name": ["LSEG", "SEC"]}),
     )
-    _table(root, "ref.listing", pd.DataFrame({"listing_id": [10, 11, 20], "issuer_id": [1, 1, 2]}))
+    _table(root, "core.listing", pd.DataFrame({"listing_id": [10, 11, 20], "issuer_id": [1, 1, 2]}))
     _table(
         root,
-        "fund.financial_fact",
+        "equity.financial_fact",
         pd.DataFrame(
             {
                 "issuer_id": [1, 1, 2],
@@ -46,7 +46,7 @@ def _cache(root: Path) -> ResearchCache:
     )
     _table(
         root,
-        "market.corporate_action",
+        "equity.corporate_action",
         pd.DataFrame(
             {
                 "listing_id": [10, 20],
@@ -61,7 +61,7 @@ def _cache(root: Path) -> ResearchCache:
     )
     _table(
         root,
-        "market.share_count",
+        "equity.share_count",
         pd.DataFrame(
             {
                 "listing_id": [10, 10],

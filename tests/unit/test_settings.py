@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from equity_research import settings
+from equity_research import preferences
+from research_core import settings
 
 
 def test_settings_come_from_the_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -38,7 +39,7 @@ def test_a_server_from_the_environment_never_takes_the_keyring_login(monkeypatch
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("EQR_DB_SERVER", r"PC\SQLEXPRESS")
     monkeypatch.setenv("EQR_DB_NAME", "fresh")
-    monkeypatch.setattr("equity_research.settings.keyring.get_password", lambda service, key: "from-keyring")
+    monkeypatch.setattr("research_core.settings.keyring.get_password", lambda service, key: "from-keyring")
     settings.get_settings.cache_clear()
     db = settings.get_settings().database
     assert (db.server, db.name, db.user, db.password) == (r"PC\SQLEXPRESS", "fresh", None, None)
@@ -48,11 +49,11 @@ def test_a_server_from_the_environment_never_takes_the_keyring_login(monkeypatch
 
 
 def test_vendor_preferences_default_and_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings.vendor_preferences.cache_clear()
-    prefs = settings.vendor_preferences()
+    preferences.vendor_preferences.cache_clear()
+    prefs = preferences.vendor_preferences()
     assert prefs.prices == ("refinitiv",)
     assert prefs.fundamentals == ("sec", "refinitiv")  # LSEG's accounts only before the SEC's begin
     monkeypatch.setenv("EQR_PRICE_VENDORS", "norgate, refinitiv")
-    settings.vendor_preferences.cache_clear()
-    assert settings.vendor_preferences().prices == ("norgate", "refinitiv")
-    settings.vendor_preferences.cache_clear()
+    preferences.vendor_preferences.cache_clear()
+    assert preferences.vendor_preferences().prices == ("norgate", "refinitiv")
+    preferences.vendor_preferences.cache_clear()

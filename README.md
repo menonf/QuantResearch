@@ -1,9 +1,13 @@
-# EquityResearch
+# QuantResearch
 
-A point-in-time equity research and backtesting platform for a small team, built so that **no backtest can see data
-it could not have had on the day it trades**, and so that **no data vendor is wired into the research**.
+A point-in-time research and backtesting platform for a small team, built so that **no backtest can see data it
+could not have had on the day it trades**, and so that **no data vendor is wired into the research**. It is one
+shared core (`research_core`: storage, the backtest engine, analytics) and one package per asset class: equities
+are built (`equity_research`); fixed income has begun (`fixed_income_research`: ICE's bond index
+constituents, loaded and rebuilt into the index). The
+repository was called EquityResearch until November 2026.
 
-It covers two markets since 2005, companies that later failed or were bought included: US equities in the S&P 500,
+The equity research covers two markets since 2000, companies that later failed or were bought included: US equities in the S&P 500,
 400 and 600 (the S&P 1500), in dollars, and London's FTSE All-Share (FTSE 100, 250 and SmallCap), in pounds. The
 design and the reasons for it are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); the working rules are in
 [CONTRIBUTING.md](CONTRIBUTING.md); the machine-learning research follows [docs/ML4T_PLAN.md](docs/ML4T_PLAN.md).
@@ -18,13 +22,13 @@ reused ticker joined to the wrong company - those are left to the user, and each
 than it would have been. The platforms that do solve some of this do it inside their own data: QuantConnect LEAN
 with the data sold through its cloud, Qlib with a point-in-time store for revised financial reports in its own format.
 
-EquityResearch is the other half: **a data platform first, with the research on top** - and the data is yours, from
+QuantResearch is the other half: **a data platform first, with the research on top** - and the data is yours, from
 the vendors you choose.
 
-| | Typical open-source tools | EquityResearch |
+| | Typical open-source tools | QuantResearch |
 |---|---|---|
 | **Who the companies were** | today's ticker list, or the vendor's own ids | a security master: a company (*issuer*) and each share line (*listing*) kept apart, every code (ticker, RIC, CUSIP, ISIN, CIK...) with the dates it was valid - a reused ticker is two companies, never one |
-| **Index membership** | today's members, or a bundle you buy | every S&P 500 / 400 / 600 and FTSE 100 / 250 / SmallCap member since 2005 with the day it joined and left, rebuilt from the vendor's event history; gates fail on a share counted twice or a member dated before it traded |
+| **Index membership** | today's members, or a bundle you buy | every S&P 500 / 400 / 600 and FTSE 100 / 250 / SmallCap member since 2000 (LSEG's S&P 400 and 600 histories begin in 2001) with the day it joined and left, rebuilt from the vendor's event history; gates fail on a share counted twice or a member dated before it traded |
 | **Company accounts** | the latest restated figures, dated by period end | every figure as first reported and every later correction, each dated by the day it was filed (SEC XBRL, free), a company kept whole across re-registrations; earlier years (before XBRL, 2009-2011) from a second vendor, one vendor per company and date, never interleaved. SimFin's figures are dated by first publication only where the SEC confirms them |
 | **Prices** | split-adjusted series, sometimes adjusted again by the tool | real (unadjusted) prices plus every split, spin-off and dividend; adjusted prices and total returns are computed when read, one formula for every vendor |
 | **Vendors** | one per project, its field names everywhere | seven adapters behind one canonical model (LSEG/Refinitiv, Norgate, SEC, Yahoo, FinanceDatabase, Tiingo, SimFin); which vendor supplies what is a setting, and two vendors' prices for one listing are checked against each other |
@@ -36,7 +40,7 @@ the vendors you choose.
 **A first check that it works.** Rebuilding the S&P 500 from its members' prices, splits, dividends and share
 counts on Norgate's data (2024-10 to 2026-10) tracks the real index closely: by market value 14.48 % a year against
 14.72 % for ^GSPC (tracking error 0.86 %, daily correlation 0.9991); equally weighted 10.15 % against 10.34 % for
-^SPXEW (0.69 %, 0.9989). [Notebook 2.1](notebooks/2_index_replication/01_sp500.ipynb) runs the same comparison on
+^SPXEW (0.69 %, 0.9989). [Notebook 2.1](notebooks/equity/2_index_replication/01_sp500.ipynb) runs the same comparison on
 the full history.
 
 ### What it is not
@@ -95,7 +99,7 @@ from Notre Dame's SRAF; all free.
 ## Setup
 
 ```sh
-uv sync --all-groups
+uv sync --all-groups                             # or: pip install -r requirements.txt (the same versions, pinned)
 uv run pytest                                    # unit tests: no database, no network
 uv run pytest -m integration                     # database tests on a local SQL Server (never Azure)
 uv run eqr set-key simfin                        # a vendor's API key, kept in the OS keyring (typed without echo)
@@ -105,7 +109,7 @@ On Windows torch is its CUDA build (`[tool.uv.sources]` in `pyproject.toml`): th
 the MLP ensemble) run on a GPU when there is one and on the processor otherwise.
 
 Settings come from environment variables or the OS keyring, never from the repository (see
-`src/equity_research/settings.py`). For a local database set `EQR_DB_SERVER` (e.g. `MENONPC\SQLEXPRESS`) and
+`src/research_core/settings.py`). For a local database set `EQR_DB_SERVER` (e.g. `<your machine>\SQLEXPRESS`) and
 `EQR_DB_NAME`; without them the shared Azure database's settings are read from the keyring.
 
 ## Pipelines
@@ -128,158 +132,198 @@ uv run eqr load-rules        # the repository's strategy rule sets (Barings' cle
                              #   tables research.rule_set / research.strategy_rule; a loaded set is never changed
 uv run eqr load-corrections  # corporate actions no vendor recorded (ingest/corrections/corporate_actions.csv:
                              #   Alphabet's class C shares of 2014...), written under vendor `repository`
-uv run eqr copy-database "MENONPC\SQLEXPRESS" equity_research_local
-                             # copy a verified local build into the configured (Azure) database, checked per table
+uv run eqr copy-database "<your machine>\SQLEXPRESS" quant_research_local
+                             # copy a verified local build into the configured (Azure) database - every asset
+                             #   class's tables, on the same migration history - checked per table
 ```
 
-## Notebooks
+## Running the notebooks
 
 Written for an undergraduate in finance, economics or a quantitative subject: standard terms (look-ahead bias,
-tracking error, information ratio...) are used and defined, with the method behind each result.
+tracking error, information ratio...) are used and defined, with the method behind each result. Each notebook says
+under its title what it **needs** and what it **produces**.
 
-Grouped by topic in six folders; each notebook's number is *folder.position* (3.2 is the second strategy), and the
-notebooks refer to one another by it.
+### 1. Environment
 
-**`notebooks/1_data_load/`** - building and maintaining the database
+```sh
+uv sync --all-groups     # Python 3.13 or later: the three packages, the Jupyter kernel and the optional groups
+```
 
-* [1.1 Initial load](notebooks/1_data_load/01_initial_load.ipynb) - builds the database from nothing: every dataset,
-  where it comes from and why it is needed.
-* [1.2 Refresh](notebooks/1_data_load/02_refresh.ipynb) - keeps it current.
-* [1.3 Filing text](notebooks/1_data_load/03_filing_text.ipynb) - the words: the SEC's filing index, every annual
-  report (10-K) since 2003 and their text measures (Loughran-McDonald counts, similarity to the year before, FinBERT's
-  tone - on the GPU when there is one).
+Open the repository in VS Code (or start Jupyter from it) and choose the `.venv` interpreter as the kernel. Three
+optional groups are needed by a few notebooks only: `ml` (LightGBM, Optuna) by 5.4, `deep` (torch) by 5.7 and 5.8,
+`text` (transformers, for FinBERT) by 1.3. One notebook from the command line:
 
-**`notebooks/2_index_replication/`** - rebuilding real indices from our own data, the first check that it is right
+```sh
+uv run jupyter execute --inplace --timeout=-1 notebooks/equity/2_index_replication/01_sp500.ipynb
+```
 
-* [2.1 S&P 500](notebooks/2_index_replication/01_sp500.ipynb) - rebuilds the S&P 500 by market value and equally, and
-  compares it with ^GSPC, SPY, ^SPXEW and RSP.
-* [2.2 FTSE All-Share](notebooks/2_index_replication/02_ftse_all_share.ipynb) - rebuilds the FTSE All-Share and its
-  FTSE 100, 250 and SmallCap segments in pounds, compares them with LSEG's index levels, and shows what equal weights
-  and leaving out investment trusts do.
+### 2. Data: what must exist before the research notebooks run
 
-**`notebooks/3_investment_strategies/`** - strategies, backtested and registered
+Nothing ships with the repository: `data/` is not in git, and the vendors' data may not be passed on. You need
 
-* [3.1 Multi-factor long-short](notebooks/3_investment_strategies/01_multifactor_long_short.ipynb) - a multi-factor
-  long-short strategy on the S&P 1500.
-* [3.2 Multi-factor long-only](notebooks/3_investment_strategies/02_multifactor_long_only.ipynb) - a long-only
-  strategy on the S&P 1500, against SPTM, an equal-weight S&P 1500 and SPY.
-* [3.3 Long-only with extra signals](notebooks/3_investment_strategies/03_multifactor_long_only_extra_signals.ipynb) -
-  four candidate signals (earnings surprise, residual momentum, free-cash-flow yield, accruals), each added on its own
-  to 3.2's long-only portfolio.
-* [3.4 Learned value score](notebooks/3_investment_strategies/04_multifactor_long_only_ml_value.ipynb) - a
-  machine-learned value score (after *Build Your Own AI Investor*), trained walk-forward, against the plain one in
-  3.2's long-only portfolio.
-* [3.5 S&P 500 GARP](notebooks/3_investment_strategies/05_sp500_garp.ipynb) - the S&P 500 GARP index (growth at a
-  reasonable price) rebuilt from its published rules and tested against SPY; Part 2 runs notebook 3.6's Barings
-  QGARP strategy on the same S&P 500 universe.
-* [3.6 Barings GARP](notebooks/3_investment_strategies/06_barings_garp.ipynb) - Barings' GEMS factors and QGARP score
-  rebuilt from their production code on our data, and a book of the best QGARP names tested against SPTM (without
-  I/B/E/S estimates for now: quality and value only).
-* [3.7 ARIMA-GARCH](notebooks/3_investment_strategies/07_arima_garch.ipynb) - a daily long/short timing of the S&P 500
-  by an ARIMA model chosen by AIC and a GJR-GARCH model fitted each day to the last 24 returns (after
-  `menonf/PythonProjects`), held in SPY against SPY.
+* **a SQL Server database** - SQL Server Express on your own machine is enough (with ODBC Driver 18), or an Azure
+  SQL database. Name it with `EQR_DB_SERVER` (e.g. `<your machine>\SQLEXPRESS`) and `EQR_DB_NAME`; a `.env` file at the
+  repository's root holding those two lines is read by VS Code's kernels and terminals;
+* **a source of index members and prices with their history** - LSEG Workspace signed in on the same machine (the
+  default sources), or Norgate Data (`EQR_SOURCES=norgate,yahoo,financedatabase,sec`; see *Data sources*). The SEC,
+  Yahoo and FinanceDatabase are free; the SEC asks for a contact (`EQR_SEC_USER_AGENT="name e-mail"`);
+* **notebook 1.1 run once** (or `uv run eqr build`): it creates the tables, loads every source, runs the quality
+  gates and syncs the local research cache. With LSEG that is two to three days of its daily allowance; a build
+  stopped by the allowance continues where it stopped.
 
-**`notebooks/4_portfolio_analytics/`** - tools for looking at stocks and portfolios rather than strategies
+After that the research notebooks read the local cache (`data/<database>/cache/<asset class>`) and, where they register a run,
+the database. Nothing they do needs a vendor.
 
-* [4.1 Stock screen](notebooks/4_portfolio_analytics/01_stock_screen.ipynb) - any registered strategy (chosen by its
-  run id) ranking today's companies by its own score, with the numbers behind each rank and the book it would hold if
-  it rebalanced today.
-* [4.2 Factor dashboard](notebooks/4_portfolio_analytics/02_factor_dashboard.ipynb) - S&P's monthly factor dashboard
-  for any registered runs of one universe, backtested again without registering them (by default our S&P 500 factor
-  books, as of the last month end before the hold-out).
-* [4.3 Risk model](notebooks/4_portfolio_analytics/03_risk_model.ipynb) - a fundamental factor risk model after
-  BlackRock's BFRE: a portfolio's risk split into market, industry, style and stock-specific parts, with its VaR and
-  the model's own tests.
+### 3. Run order
 
-**`notebooks/5_analysis/`** - questions about method rather than strategies
+Run them in the order of their numbers - *folder.position* (3.2 is the second strategy), which is also how they
+refer to one another. The equity notebooks are under `notebooks/equity/`; the fixed income ones, numbered the
+same way, under `notebooks/fixed_income/` (listed after them).
 
-* [5.1 Choosing a learning algorithm](notebooks/5_analysis/01_choosing_ml_algorithm.ipynb) - the eight learning
-  algorithms of *Build Your Own AI Investor* explained, how the book chose among them, and the choice made again
-  without hindsight: candidates fixed in advance, each trained walk-forward, chosen each January by its out-of-sample
-  rank IC, every portfolio registered.
-* [5.2 Choosing a learning algorithm, second version](notebooks/5_analysis/02_choosing_ml_algorithm_v2.ipynb) - the
-  same choice after four changes diagnosed from 5.1: learn each company's percentile rather than its return,
-  percentile features, settings for a weak signal, and price, size, issuance, surprise and growth features beside the
-  book's ratios; a new registry family, deflated by both studies' trials.
-* [5.3 Choosing a learning algorithm, third version](notebooks/5_analysis/03_choosing_ml_algorithm_v3.ipynb) - why
-  5.2's better ranking earned nothing (a percentile target learns the typical year, a portfolio is paid the average
-  one), and the choice made a third time: a clipped excess-return target, the models judged by what their top 30 %
-  went on to earn, a forecast that ranks nobody holding the largest companies.
+**`1_data_ingestion/`** - building and maintaining the database
 
-**`notebooks/6_machine_learning/`** - the machine-learning plan (`docs/ML4T_PLAN.md`), after *Machine Learning for
-Trading* (3rd edition)
+| | Notebook | What it does |
+|---|---|---|
+| 1.1 | [Initial load](notebooks/equity/1_data_ingestion/01_initial_load.ipynb) | builds the database from nothing: every dataset, where it comes from and why it is needed |
+| 1.2 | [Refresh](notebooks/equity/1_data_ingestion/02_refresh.ipynb) | keeps it current (optional before the research notebooks) |
+| 1.3 | [Filing text](notebooks/equity/1_data_ingestion/03_filing_text.ipynb) | the SEC's filing index, every annual report since 2003 and their text measures; only 5.10 needs it |
 
-* [6.1 Research protocol](notebooks/6_machine_learning/01_research_protocol.ipynb) - the rules every later notebook
-  follows (hold-out, walk-forward folds purged of overlapping labels, searches registered whole, signals triaged
-  first), the labels, and feasibility: breadth, moves against trading costs, and the evaluation toolkit on nine known
-  factors.
-* [6.2 Features](notebooks/6_machine_learning/02_features.ipynb) - about fifty company features (momentum, risk,
-  liquidity, accounts, model-based volatility and trend) and two date features (market regime, calendar), each triaged
-  alone against next month's return with false-discovery control, their decay, redundancy and overlap with the
-  existing factors and the risk model's styles.
-* [6.3 Linear models](notebooks/6_machine_learning/03_linear_models.ipynb) - ridge, lasso, elastic net and logistic
-  regression on all the features, tuned inside each walk-forward fold, against a plain average of 6.2's two survivors;
-  coefficient stability and conformal intervals.
-* [6.4 Gradient boosting](notebooks/6_machine_learning/04_gradient_boosting.ipynb) - LightGBM with squared, Huber and
-  ranking losses, a grid tuned in each fold and an Optuna search before 2015, against 6.3's models, the composite and
-  notebook 3.4's learned value; SHAP importance.
-* [6.5 ML strategy](notebooks/6_machine_learning/05_ml_strategy.ipynb) - four out-of-sample signals as 44 portfolios:
-  long-only and long-short deciles, equal, inverse-volatility, HRP and mean-variance weights, and volatility, drawdown
-  and Kelly overlays, all registered.
-* [6.6 Strategy assessment](notebooks/6_machine_learning/06_strategy_assessment.ipynb) - those strategies' break-even
-  costs, tail risk, signal drift, transfer coefficients and the Fundamental Law, White's Reality Check and Rademacher
-  bounds; what the hold-out step needs.
-* [6.7 Latent factors](notebooks/6_machine_learning/07_latent_factors.ipynb) - PCA, RP-PCA, IPCA and a conditional
-  autoencoder on characteristic-managed portfolios, out of sample, against the risk model's factors: explained
-  variance, pricing errors, the SDF's Sharpe ratio.
-* [6.8 Deep learning](notebooks/6_machine_learning/08_deep_learning.ipynb) - NLinear, LSTM and TSMixer on weekly
-  returns against last week's reversal, and an MLP ensemble on the features against the linear models and gradient
-  boosting.
-* [6.9 Causal ML](notebooks/6_machine_learning/09_causal_ml.ipynb) - double machine learning of momentum's effect with
-  the other characteristics as controls, and a factor-zoo check of the features that survived the triage.
-* [6.10 Text features](notebooks/6_machine_learning/10_text_features.ipynb) - the words of 10-Ks and 8-Ks (loaded by
-  1.3): Loughran-McDonald tone, year-on-year change of the report ("Lazy Prices"), FinBERT's tone of the MD&A, 8-K
-  events; triaged and checked against the price and accounts features.
-* [6.11 Synthetic data](notebooks/6_machine_learning/11_synthetic_data.ipynb) - three generators of synthetic markets
-  (block bootstrap, factor GARCH-t, regime switching), their realism against the stylized facts, and 6.5's books run
-  on 200 synthetic decades and two stress scenarios.
+**`2_index_replication/`** - rebuilding real indices from our own data, the first check that it is right
+
+| | Notebook | What it does |
+|---|---|---|
+| 2.1 | [S&P 500](notebooks/equity/2_index_replication/01_sp500.ipynb) | rebuilds the S&P 500 by market value and equally, against ^GSPC, SPY, ^SPXEW and RSP |
+| 2.2 | [FTSE All-Share](notebooks/equity/2_index_replication/02_ftse_all_share.ipynb) | rebuilds the FTSE All-Share and its three segments in pounds, against LSEG's index levels |
+
+**`3_investment_strategies/`** - strategies from simple to advanced, each backtested and registered
+
+| | Notebook | What it does |
+|---|---|---|
+| 3.1 | [Multi-factor long-only](notebooks/equity/3_investment_strategies/01_multifactor_long_only.ipynb) | a long-only strategy on the S&P 1500, against SPTM, an equal-weight S&P 1500 and SPY |
+| 3.2 | [Long-only with extra signals](notebooks/equity/3_investment_strategies/02_long_only_extra_signals.ipynb) | four candidate signals (earnings surprise, residual momentum, free-cash-flow yield, accruals), each added to 3.1's portfolio |
+| 3.3 | [Learned value score](notebooks/equity/3_investment_strategies/03_long_only_learned_value.ipynb) | a machine-learned value score (after *Build Your Own AI Investor*), trained walk-forward, against the plain one |
+| 3.4 | [Multi-factor long-short](notebooks/equity/3_investment_strategies/04_multifactor_long_short.ipynb) | a beta-neutral long-short strategy; explains the run registry, the deflated Sharpe ratio and the hold-out |
+| 3.5 | [S&P 500 GARP and QGARP](notebooks/equity/3_investment_strategies/05_sp500_garp_and_qgarp.ipynb) | the S&P 500 GARP index rebuilt from its published rules; Part 2 runs 3.6's QGARP on the same universe |
+| 3.6 | [Barings QGARP](notebooks/equity/3_investment_strategies/06_barings_qgarp.ipynb) | Barings' QGARP strategy reconstructed from its rules, and a book of its best names against SPTM |
+
+**`4_portfolio_analytics/`** - performance, risk and attribution of what the strategies hold
+
+| | Notebook | What it does |
+|---|---|---|
+| 4.1 | [Factor dashboard](notebooks/equity/4_portfolio_analytics/01_factor_dashboard.ipynb) | S&P's monthly factor dashboard for any registered strategies of one universe: returns, risk, overlap, exposures |
+| 4.2 | [Risk model](notebooks/equity/4_portfolio_analytics/02_risk_model.ipynb) | a fundamental factor risk model after BlackRock's BFRE: a portfolio's risk by source, its VaR, stress tests |
+| 4.3 | [Stock screen](notebooks/equity/4_portfolio_analytics/03_stock_screen.ipynb) | any registered strategy ranking today's companies by its own score, and the book it would hold today |
+
+**`5_machine_learning/`** - the machine-learning plan ([docs/ML4T_PLAN.md](docs/ML4T_PLAN.md)), after *Machine
+Learning for Trading* (3rd edition); each notebook reads what the ones before it kept in the artifact store
+
+| | Notebook | What it does |
+|---|---|---|
+| 5.1 | [Research protocol](notebooks/equity/5_machine_learning/01_research_protocol.ipynb) | the rules every later notebook follows, the labels, and whether the data can support the plan |
+| 5.2 | [Features](notebooks/equity/5_machine_learning/02_features.ipynb) | about fifty company features, each triaged alone against next month's return |
+| 5.3 | [Linear models](notebooks/equity/5_machine_learning/03_linear_models.ipynb) | ridge, lasso, elastic net and logistic regression, tuned inside each walk-forward fold |
+| 5.4 | [Gradient boosting](notebooks/equity/5_machine_learning/04_gradient_boosting.ipynb) | LightGBM with three losses, a grid and an Optuna search; SHAP importance |
+| 5.5 | [ML strategy](notebooks/equity/5_machine_learning/05_ml_strategy.ipynb) | four out-of-sample signals as 44 registered portfolios |
+| 5.6 | [Strategy assessment](notebooks/equity/5_machine_learning/06_strategy_assessment.ipynb) | break-even costs, tail risk, signal drift, the Fundamental Law, White's Reality Check |
+| 5.7 | [Latent factors](notebooks/equity/5_machine_learning/07_latent_factors.ipynb) | PCA, RP-PCA, IPCA and a conditional autoencoder against the risk model's factors |
+| 5.8 | [Deep learning](notebooks/equity/5_machine_learning/08_deep_learning.ipynb) | NLinear, LSTM and TSMixer on weekly returns; an MLP ensemble on the features |
+| 5.9 | [Causal ML](notebooks/equity/5_machine_learning/09_causal_ml.ipynb) | double machine learning of momentum's effect; a factor-zoo check |
+| 5.10 | [Text features](notebooks/equity/5_machine_learning/10_text_features.ipynb) | the words of 10-Ks and 8-Ks: dictionary tone, year-on-year change, FinBERT, events |
+| 5.11 | [Synthetic data](notebooks/equity/5_machine_learning/11_synthetic_data.ipynb) | three generators of synthetic markets, and 5.5's books run on them |
+
+**`notebooks/fixed_income/`** - needs a folder of ICE's month-end constituent files (`EQR_ICE_DIR`) and the
+database migrated to the latest schema; nothing from the equity notebooks
+
+| | Notebook | What it does |
+|---|---|---|
+| 1.1 | [Index constituents](notebooks/fixed_income/1_data_ingestion/01_index_constituents.ipynb) | loads the files (bonds, issuers, weights, analytics), the index's official level from FRED, runs the gates, syncs the cache |
+| 2.1 | [US High Yield](notebooks/fixed_income/2_index_replication/01_us_high_yield.ipynb) | rebuilds the ICE BofA US High Yield Index from its bonds, against the official index; its spread, yield, duration and ratings |
+
+Three things to know before running everything:
+
+* the data-ingestion notebooks call the vendors and write to the database - run them when you mean to load data, not
+  as a test;
+* a strategy notebook registers its runs again each time it runs. A configuration registered before is not another
+  trial, so the trial counts and deflated Sharpe ratios do not move; notebooks 3.5 and 3.6 run with the hold-out open;
+* the machine-learning notebooks take about five hours the first time; afterwards they read what they kept.
 
 ## A backtest
 
 ```python
-from equity_research.db.engine import get_engine
-from equity_research.research.cache import ResearchCache
-from equity_research.research.strategy import StrategyConfig, run_strategy
+from research_core.data.db.engine import get_engine
+from research_core.data.cache import ResearchCache
+from equity_research.strategies.factor_strategy import StrategyConfig, run_strategy
 
 cfg = StrategyConfig(family="value_quality_ls", universe="SP1500", factors=(("value", 1.0), ("quality", 1.0)))
 result = run_strategy(ResearchCache(), cfg, engine=get_engine())  # fenced, backtested, registered
 result.metrics  # cagr, vol, sharpe, max_drawdown, turnover, trials, deflated_sharpe
 ```
 
-## Layout
+## Project layout
 
 ```
-src/equity_research/
-  settings.py   cli.py   ops.py (job runs, writer lock)
-  db/           engine, schema (SQLAlchemy Core), change-only upserts, inventory
-  raw/          the raw zone: land a vendor answer, register its batch, read it back, prune public files
-  ingest/       identity (issuers, listings, identifiers, matching, merges), membership (spells made consistent),
-                reference (indices, universes), classification (sector history), countries, corrections
-                (corporate actions no vendor recorded);
-                vendors/<vendor>/ adapters: refinitiv (LSEG), norgate, sec (accounts; filing index and text), yahoo,
-                financedatabase, tiingo, simfin, sraf (the Loughran-McDonald dictionary)
-  pipelines/    sources (the registry a build runs), load_<vendor> for each adapter, load_estimates, load_sec_text,
-                load_rules, load_corrections, refresh, copy_database
-  quality/      checks and gates; audit (the architecture rules and fitness for research)
-  research/     the data: cache, store (results kept by data version), panels, accounting, ratios, compare, data
-                strategies: factors, portfolio, backtest, strategy, registry, runs, rules (shared rule sets),
-                indices, screen, dashboard,
-                risk_model, garp and barings_* (GARP, QGARP), arima_garch, ml and model_choice* (notebooks 5.x)
-                the ML plan: labels, validation, evaluation, features, text_features, linear, boosting, deep,
-                latent, autoencoder, causal, allocation, assessment, ml_strategy, synthetic, regression
-  charts.py     the notebooks' charts
-migrations/     Alembic
-notebooks/      the six folders above
-docs/           ARCHITECTURE.md (the design), ML4T_PLAN.md (the machine-learning plan and its log)
-tests/          unit/ (pure) and integration/ (a scratch database on a local SQL Server)
+src/
+  research_core/            shared by every asset class - it imports none of them
+    settings.py             database, data folder, keyring, hold-out start (environment variables, then the keyring)
+    charts.py               the notebooks' charts
+    data/                   db/ (engine, the shared tables, change-only upserts, migrations, database copy),
+                            raw_store (the raw zone), ops (job runs, writer lock), quality (checks as gates),
+                            identity (issuers, listings, identifiers), cache (the research cache), artifact_store,
+                            calendars
+    engine/                 backtest (books to returns), portfolio (scores to weights), allocation, registry (runs,
+                            trials, deflated Sharpe, hold-out), finish (a run measured and registered)
+    analytics/              performance/ (metrics, tracking, periods, holdings), risk/ (statistics),
+                            signals/ (labels, evaluation, validation)
+  equity_research/          everything that knows about shares - it imports research_core only
+    cli.py                  the `eqr` command
+    preferences.py          which vendor supplies what
+    data/                   the equity tables, the research cache's table list, the artifact store bound to the
+                            returns method, panels, accounting, ratios, sectors, universe (a backtest's data)
+    ingest/                 vendors/<vendor>/ adapters, membership, reference, classification, countries, corrections
+    pipelines/              sources, load_<vendor>, load_estimates, load_sec_text, load_rules, load_corrections, refresh
+    quality/                the equity gates; the audit
+    strategies/             factors, factor_strategy, learned_value, garp, barings_garp (QGARP), rules, runs
+    analytics/              indices, dashboard, screen, risk/ (the BFRE factor risk model, a portfolio's risk)
+    ml/                     the machine-learning plan: features, models, strategies, their assessment
+    research/               helpers for the notebooks only
+    regression.py           the regression check: strategies and the risk model measured again
+  fixed_income_research/    bond indices from their constituents - it imports research_core only
+    cli.py                  the `fir` command
+    data/ ingest/ pipelines/ quality/ analytics/    see its README
+migrations/                 Alembic: one database, one history for every asset class
+notebooks/equity/           the five folders above;  notebooks/fixed_income/  1.1 and 2.1
+docs/                       ARCHITECTURE.md (the design), ML4T_PLAN.md (the machine-learning plan and its log)
+tests/                      unit/ (pure) and integration/ (a scratch database on a local SQL Server)
 ```
+
+**Dependency rules** (checked by `tests/unit/test_dependency_rules.py`, part of the unit tests):
+
+1. `research_core` imports no asset-class package;
+2. the asset-class packages (`equity_research`, `fixed_income_research`) never import one another - what two of
+   them need moves to `research_core`;
+3. `equity_research/research/` holds helpers for the notebooks only: nothing in `src` or `tests` imports it.
+
+## Adding an asset class
+
+1. **A package** `src/<asset>_research/` (`__init__.py` with `ASSET_CLASS = "<asset>"`, `py.typed`); name it in
+   `pyproject.toml` (`[tool.hatch.build.targets.wheel] packages`), in `ASSET_CLASSES` of
+   `tests/unit/test_dependency_rules.py` and in `PACKAGES` of `tests/unit/test_database_layout.py`.
+2. **Tables** in its own `data/schema.py`, all in the database schema named after the asset class, defined on
+   `research_core.data.db.schema.metadata` and reusing the shared ones (`core.issuer`, `core.listing`,
+   `core.identifier`: a bond is a listing of an issuer; a crypto asset or an exchange rate a listing without one).
+   Register the module in `pyproject.toml` under `[project.entry-points."research_core.asset_classes"]` - that is
+   how the migrations, `copy-database` and an issuer merge find its tables - and run `uv sync`.
+3. **One migration** under `migrations/versions/` creating its schema and tables and inserting its rows in
+   `core.asset_class`, `core.instrument_type` (its kinds of listing), `core.id_type` (its kinds of code) and
+   `core.vendor` (its vendors, also in `VENDORS`). The shared tables do not change (docs/ARCHITECTURE.md section 3).
+4. **Ingestion**: vendor adapters that land every answer through `research_core.data.raw_store`, write through
+   `research_core.data.db.upsert` inside `research_core.data.ops.job`, and end with their own
+   `research_core.data.quality.Check`s.
+5. **Reads**: a `ResearchCache` with its table list, in `cache/<asset class>` (as `equity_research/data/cache.py`),
+   and an `ArtifactStore` of its asset class bound to the versions of its own methods (as
+   `equity_research/data/artifacts.py`).
+6. **Returns and backtests**: build a `date x instrument` total-return panel - for bonds, carry and roll-down
+   belong there - and hand it to `research_core.engine.backtest.run_backtest` (`periods_per_year` when it is not
+   daily); finish with `research_core.engine.finish.finish_run(..., asset_class=ASSET_CLASS)`, so every asset class's
+   runs are registered and deflated alike, and filed under their asset class.
+7. **Notebooks** under `notebooks/<asset>/`, numbered folder.position, each saying what it needs and produces.

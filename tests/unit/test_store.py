@@ -2,9 +2,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from equity_research.research import panels, regression, store
+from equity_research import regression
+from equity_research.data import artifacts as store
+from equity_research.data import panels
+from research_core.data.artifact_store import ArtifactStore, config_hash
 
 
 def _panel() -> pd.DataFrame:
@@ -30,10 +32,22 @@ def test_another_config_or_data_snapshot_is_another_artifact(tmp_path: Path) -> 
     assert store.load("labels", "x", {"horizon": 21}, snapshot="b", root=tmp_path) is None  # new data: rebuilt
 
 
-def test_a_new_returns_method_is_another_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_new_returns_method_is_another_artifact(tmp_path: Path) -> None:
     store.save(_panel(), "labels", "x", {"horizon": 21}, snapshot="a", root=tmp_path)
-    monkeypatch.setattr(store, "RETURNS_VERSION", panels.RETURNS_VERSION + 1)
-    assert store.load("labels", "x", {"horizon": 21}, snapshot="a", root=tmp_path) is None  # rebuilt, not reused
+    later = ArtifactStore(
+        "equity", method={"returns": panels.RETURNS_VERSION + 1}, separate_tables=store.SEPARATE_TABLES
+    )
+    assert later.load("labels", "x", {"horizon": 21}, snapshot="a", root=tmp_path) is None  # rebuilt, not reused
+
+
+def test_the_key_names_the_configuration_the_data_and_the_returns_method(tmp_path: Path) -> None:
+    # the key every artifact on disk was saved under: moving the store must not rename them
+    key = config_hash(
+        {"kind": "labels", "name": "x", "config": {"horizon": 21}, "snapshot": "a", "returns": panels.RETURNS_VERSION}
+    )
+    assert (
+        store.artifact_path("labels", "x", {"horizon": 21}, "a", tmp_path) == tmp_path / "labels" / f"x-{key}.parquet"
+    )
 
 
 def test_cached_builds_once(tmp_path: Path) -> None:

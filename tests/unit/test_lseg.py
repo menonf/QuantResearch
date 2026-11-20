@@ -276,7 +276,7 @@ def test_the_uk_probe_reports_a_broken_expectation_and_stops_at_the_limit() -> N
             return None
 
     report = probe_uk(cast(LsegClient, InDollars())).set_index("dataset")
-    assert "members today" in str(report.loc["members: FTSE 100 / 250 / SmallCap since 2005", "detail"])
+    assert "members today" in str(report.loc["members: FTSE 100 / 250 / SmallCap since 2000", "detail"])
     assert report.loc["official closes (live and retired)", "ok"]
     assert not report.loc["prices in pence", "ok"] and "not pence" in str(report.loc["prices in pence", "detail"])
     assert "limit reached" in str(report.loc["dividends in pounds", "detail"])
@@ -610,6 +610,38 @@ def test_a_change_of_quote_currency_is_found_by_the_exchange_rate() -> None:
     # a collapse is not a currency (Hammerson: 280.6p to 23p, a rights issue - no rate is 12x)
     crash = pd.DataFrame({"trade_date": days, "close": [287.0, 282.0, 280.6, 23.0, 24.1, 24.9]})
     assert set(norm.quote_currencies(crash, "GBX", _pounds(days))) == {"GBX"}
+
+
+def test_a_consolidation_the_share_count_shows_is_no_change_of_quote_currency() -> None:
+    # Durlacher (now Panmure Liberum), November 2002: 1.05p to 113p - pounds to pence, by the rate - but a 1-for-140
+    # consolidation LSEG has no action for: its shares fell from 570m to 4m that month
+    days = pd.bdate_range("2002-10-30", periods=6)
+    durlacher = pd.DataFrame({"trade_date": days, "close": [1.0, 1.05, 1.05, 113.0, 115.0, 112.0]})
+    assert norm.quote_currencies(durlacher, "GBX", _pounds(days)).tolist() == ["GBP"] * 3 + ["GBX"] * 3
+    counts = pd.Series([569_850_595.0, 4_070_631.0], index=pd.to_datetime(["2002-10-31", "2002-11-29"]))
+    assert set(norm.quote_currencies(durlacher, "GBX", _pounds(days), counts=counts)) == {"GBX"}
+    # a count that does not move leaves a real change of quote currency alone (InterContinental Hotels, 2026)
+    ihg_days = pd.bdate_range("2025-12-29", periods=6)
+    ihg = pd.DataFrame({"trade_date": ihg_days, "close": [10365.0, 10440.0, 10460.0, 138.45, 135.65, 136.55]})
+    flat = pd.Series([1.6e8, 1.6e8], index=pd.to_datetime(["2025-12-31", "2026-01-30"]))
+    assert norm.quote_currencies(ihg, "USD", _pounds(ihg_days), counts=flat).tolist() == ["GBX"] * 3 + ["USD"] * 3
+
+
+def test_a_jump_under_a_penny_is_no_change_of_quote_currency() -> None:
+    # Quarterly High Income Trust, 2002: 0.0205 to 0.50 (pence) matches pence per lari, a currency LSEG's dividends
+    # are declared in; a near-worthless line's jump is noise, and four years of pence were read as lari
+    days = pd.bdate_range("2002-09-24", periods=6)
+    pounds = _pounds(days).assign(GEL=0.3)
+    trust = pd.DataFrame({"trade_date": days, "close": [0.02, 0.0205, 0.0205, 0.5001, 0.45, 0.5]})
+    assert set(norm.quote_currencies(trust, "GBX", pounds)) == {"GBX"}
+
+
+def test_count_ratios_take_the_counts_either_side_of_each_day() -> None:
+    counts = pd.Series([100.0, 50.0], index=pd.to_datetime(["2020-01-31", "2020-02-28"]))
+    days = pd.to_datetime(["2020-01-15", "2020-02-10", "2020-02-28", "2020-06-01"])
+    out = norm.count_ratios(counts, pd.DatetimeIndex(days))
+    assert np.isnan(out[0]) and np.isnan(out[3])  # no count before it; both too far from it
+    assert out[1] == 0.5 and out[2] == 0.5  # a count dated on the day is the one after it
 
 
 def test_london_capital_changes_go_by_their_ex_date() -> None:

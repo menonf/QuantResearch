@@ -1,12 +1,17 @@
-"""Alembic environment: the engine and metadata come from the package (no URL in alembic.ini)."""
+"""Alembic environment: the engine and metadata come from the packages (no URL in alembic.ini).
+
+One database and one migration history serve every asset class. The database is laid out as the code is: the shared
+package's schemas (core, ingest, ops, research) and one schema per asset class, named after it. Every asset class
+registered in ``pyproject.toml`` is loaded here, which puts all its tables on the shared metadata.
+"""
 
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy.engine import Connection
 
-from equity_research.db.engine import get_engine
-from equity_research.db.schema import SCHEMAS, metadata
+from research_core.data.db.engine import get_engine
+from research_core.data.db.schema import all_schemas, metadata
 
 config = context.config
 if config.config_file_name is not None and config.attributes.get("configure_logger", True):
@@ -16,7 +21,7 @@ if config.config_file_name is not None and config.attributes.get("configure_logg
 def include_name(name: str | None, type_: str, parent_names: dict[str, str | None]) -> bool:
     """Only the project's schemas are managed (dbo holds just alembic_version)."""
     if type_ == "schema":
-        return name in SCHEMAS
+        return name in all_schemas()
     return True
 
 

@@ -1,12 +1,7 @@
 import pytest
 
-from equity_research.research.registry import (
-    HoldoutClosedError,
-    config_hash,
-    deflated_sharpe,
-    expected_max_sharpe,
-    fence,
-)
+from research_core.data.artifact_store import config_hash
+from research_core.engine.registry import HoldoutClosedError, deflated_sharpe, expected_max_sharpe, fence
 
 
 def test_config_hash_ignores_key_order() -> None:

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import text_features as tf
+from equity_research.ml import text_features as tf
 
 
 def _missing(value: object) -> bool:

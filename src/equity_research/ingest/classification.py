@@ -17,9 +17,9 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
 
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import upsert
+from equity_research.data import schema
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import upsert
 
 LEVELS = ("sector", "industry_group", "industry", "sub_industry")
 

@@ -4,7 +4,10 @@
 carried over from the previous project (checked 2026-10-19..23):
 
 * ``0#.SPX(<date>)`` ignores the date and returns *today's* members: history comes from replaying the joiner /
-  leaver events (``TR.IndexJLConstituent*``) backwards from today's list.
+  leaver events (``TR.IndexJLConstituent*``) backwards from today's list. Asked from 2000 (checked 2026-11-15): the
+  S&P 500's events begin 2000-01-03; the S&P 400's on 2001-07-20, with 397 "joiners" that day, and the S&P 600's on
+  2001-01-16, with 580 - the day LSEG's history of each begins, not real joins. Before those days the two have no
+  members: the S&P 1500 of 2000-2001 is the S&P 500 alone.
 * ``TR.IssueSharesOutstanding`` is the actual share count per share class, monthly, retired RICs included, not
   restated for later splits; times ``TR.FreeFloatPct`` it is the float index providers weight by. Company-level
   counts (``TR.F.ComShrOutsTot``) give Alphabet's total to both GOOG and GOOGL, and Berkshire in class-A units - and
@@ -31,7 +34,6 @@ EVENT_FIELDS = [
     "TR.IndexJLConstituentName",
     "TR.IndexJLConstituentituentChange",  # sic: the field is spelled this way
 ]
-EVENT_COLUMNS = {"Date": "date", "Constituent RIC": "ric", "Constituent Name": "name", "Change": "change"}
 
 # ---------------------------------------------------------------- listings and their codes
 INSTRUMENT_FIELDS = [
@@ -226,10 +228,11 @@ YEARLY_ACTUALS = {"Frq": "FY", "Period": "FY0"}
 # ---------------------------------------------------------------- London: the FTSE UK indices
 # Checked live 2026-11-01 (``eqr probe-lseg-uk`` repeats the checks):
 # * ``0#.FTSE`` / ``0#.FTMC`` / ``0#.FTSC`` list today's FTSE 100 / 250 / SmallCap (100 + 251 + 174: the All-Share's
-#   525); their joiner / leaver events reach back to January 2005 - 1,379 RICs since;
+#   525); their joiner / leaver events reach back to January 2000 (checked live 2026-11-15);
 # * London's ``TRDPRC_1`` is the last trade, often after the closing auction (Vodafone 2026-10-23: 118.6866), not the
 #   official close ``OFF_CLOSE`` (118.2) that ``TR.PriceClose`` answers - histories ask ``OFF_CLOSE``, which answers
-#   back to 2006, for retired RICs too, and a whole 11-year window in one request;
+#   back to January 2000 (Vodafone, checked 2026-11-15), for retired RICs too, and a whole 11-year window in one
+#   request;
 # * prices are in pence (``GBp``); a London line's dividends in pounds (``GBP``), also for companies declaring them in
 #   dollars (Shell, HSBC);
 # * no CUSIP - ISIN and SEDOL; a RIC's root is not the ticker for 118 of the 525 (``SJP.L`` is STJ, ``VNHq.L`` is no
@@ -299,10 +302,11 @@ UK_STATEMENT_FIELDS = ["TR.F.TotRevenue.periodenddate", *UK_STATEMENT_ITEMS, "TR
 UK_LEVELS = {"FTSEAS_TR": ".FTASXGBPT", "FTSEAS_XIT_TR": ".FTASXXMGBPT"}
 
 # ---------------------------------------------------------------- exchange rates
-# Checked live 2026-11-01: a currency's history answers MID_PRICE (BID, ASK too; TRDPRC_1 is refused) from 2005, a
-# whole 11-year window in one request. Some dividends of London lines are declared in other currencies (Anglo American
-# dollars, Shell euros until 2022, Old Mutual rand); asked converted (``Curn=GBP``), LSEG's dividend amounts come back
-# shifted against their ex-dates, so they are kept as declared and converted in research with these rates.
+# Checked live 2026-11-01: a currency's history answers MID_PRICE (BID, ASK too; TRDPRC_1 is refused) - from January
+# 2000 (GBP=, EUR=, ZAR=, checked 2026-11-15) - a whole 11-year window in one request. Some dividends of London
+# lines are declared in other currencies (Anglo American dollars, Shell euros until 2022, Old Mutual rand); asked
+# converted (``Curn=GBP``), LSEG's dividend amounts come back shifted against their ex-dates, so they are kept as
+# declared and converted in research with these rates.
 FX_HISTORY_FIELDS = ["MID_PRICE"]
 
 # ---------------------------------------------------------------- London: capital changes and quote currencies

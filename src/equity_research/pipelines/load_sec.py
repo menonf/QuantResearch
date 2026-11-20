@@ -7,7 +7,7 @@ Steps:
 2. match issuers to CIKs (:mod:`equity_research.ingest.vendors.sec.cik`); issuers sharing a CIK are one company and
    are merged; the CIK becomes an issuer identifier;
 3. filings and financial facts, as reported, for every matched issuer and each of its CIKs (a company that
-   re-registered files its earlier accounts under the old one) - ``fund.filing``, ``fund.financial_fact``.
+   re-registered files its earlier accounts under the old one) - ``equity.filing``, ``equity.financial_fact``.
 """
 
 from __future__ import annotations
@@ -23,11 +23,7 @@ import requests
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
-from equity_research import ops
-from equity_research.db import schema
-from equity_research.db.schema import vendor_id
-from equity_research.db.upsert import UpsertResult, upsert
-from equity_research.ingest.identity import US_MARKETS, add_identifiers, merge_issuers
+from equity_research.data import schema
 from equity_research.ingest.vendors.sec import VENDOR
 from equity_research.ingest.vendors.sec import normalize as sec
 from equity_research.ingest.vendors.sec.cik import match_issuers
@@ -38,8 +34,12 @@ from equity_research.ingest.vendors.sec.client import (
     COMPANY_TICKERS_URL,
     SecClient,
 )
-from equity_research.raw.store import Batch, land_file, mark, recent_batch
-from equity_research.settings import get_settings
+from research_core.data import ops
+from research_core.data.db.schema import vendor_id
+from research_core.data.db.upsert import UpsertResult, upsert
+from research_core.data.identity import US_MARKETS, add_identifiers, merge_issuers
+from research_core.data.raw_store import Batch, land_file, mark, recent_batch
+from research_core.settings import get_settings
 
 log = logging.getLogger(__name__)
 
@@ -82,16 +82,17 @@ def land_sources(engine: Engine, client: SecClient, *, max_age_days: float = 7) 
 def _issuer_tickers(conn: Connection) -> pd.DataFrame:
     """``[issuer_id, cusip6, ticker, name]``: each issuer's CUSIP issuer code, its listings' current tickers, its name.
 
-    Tickers come from ``ref.identifier`` whichever vendor recorded them - only those valid today (tickers are reused),
+    Tickers come from ``core.identifier`` whichever vendor recorded them - only those valid today (tickers are reused),
     and only of US listings: the SEC's ticker file is US tickers, and London's ``AAL`` is not American Airlines.
     """
     sql = sa.text(
         """
         SELECT l.issuer_id, cu.value AS cusip6, t.value AS ticker, i.name
-        FROM ref.listing l
-        JOIN ref.issuer i ON i.issuer_id = l.issuer_id
-        LEFT JOIN ref.identifier cu ON cu.entity_type = 'issuer' AND cu.entity_id = l.issuer_id AND cu.id_type = 'CUSIP'
-        LEFT JOIN ref.identifier t ON t.entity_type = 'listing' AND t.entity_id = l.listing_id AND t.id_type = 'TICKER'
+        FROM core.listing l
+        JOIN core.issuer i ON i.issuer_id = l.issuer_id
+        LEFT JOIN core.identifier cu
+            ON cu.entity_type = 'issuer' AND cu.entity_id = l.issuer_id AND cu.id_type = 'CUSIP'
+        LEFT JOIN core.identifier t ON t.entity_type = 'listing' AND t.entity_id = l.listing_id AND t.id_type = 'TICKER'
              AND t.valid_to IS NULL AND (l.exchange_mic IN :markets OR l.exchange_mic IS NULL)
         WHERE l.issuer_id IS NOT NULL
         """

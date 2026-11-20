@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import evaluation as ev
+from research_core.analytics.signals import evaluation as ev
 
 DATES = pd.bdate_range("2020-01-01", periods=40)
 NAMES = list(range(1, 101))

@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.research import ml
+from equity_research.strategies import learned_value as ml
 
 MONTH_ENDS = pd.date_range("2006-01-31", "2011-12-31", freq="ME")
 NAMES = list(range(1, 41))

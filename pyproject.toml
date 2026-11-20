@@ -1,7 +1,7 @@
 [project]
-name = "equity-research"
+name = "quant-research"
 version = "0.1.0"
-description = "Vendor-neutral, point-in-time equity research and backtesting"
+description = "Vendor-neutral, point-in-time research and backtesting: a shared core, one package per asset class"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -11,6 +11,7 @@ dependencies = [
     "keyring>=25",
     "lseg-data>=2.1.1",
     "numpy>=2.1",
+    "openpyxl>=3.1",
     "pandas>=2.2",
     "pyarrow>=18",
     "pycountry>=26.2.16",
@@ -24,6 +25,13 @@ dependencies = [
 
 [project.scripts]
 eqr = "equity_research.cli:app"
+fir = "fixed_income_research.cli:app"
+
+# Each asset class's tables, in the database schema named after it: research_core finds them here (the migrations, a
+# database copy, an issuer merge) without importing any asset-class package
+[project.entry-points."research_core.asset_classes"]
+equity = "equity_research.data.schema"
+fixed_income = "fixed_income_research.data.schema"
 
 [dependency-groups]
 deep = [
@@ -58,7 +66,7 @@ requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/equity_research"]
+packages = ["src/research_core", "src/equity_research", "src/fixed_income_research"]
 
 # torch's CUDA build on Windows (this PC's RTX GPU; a CPU still runs it): PyPI's Windows wheel is CPU-only
 [[tool.uv.index]]
@@ -105,7 +113,7 @@ convention = "google"
 python_version = "3.13"
 strict = true
 mypy_path = "src"
-files = ["src/equity_research", "tests"]  # the tests are code too
+files = ["src", "tests"]  # the tests are code too
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
@@ -114,6 +122,7 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]  # helpers the unit and integration tests share
 markers = [
     "integration: needs the database (deselect with -m 'not integration')",
 ]
