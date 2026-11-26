@@ -130,3 +130,16 @@ def test_a_flat_score_has_an_ic_of_zero_not_a_missing_one() -> None:
     few = pd.DataFrame(True, index=score.index, columns=NAMES)
     few.iloc[1, 10:] = False  # too few members to judge: missing, flat or not
     assert np.isnan(ev.ic_flat_zero(score, outcome, few).iloc[1])
+
+
+def test_quantile_transitions_say_how_long_a_name_stays_in_its_quantile() -> None:
+    steady = _panel(np.tile(np.arange(100.0), (6, 1)))
+    table = ev.quantile_transitions(steady, quantiles=5)
+    assert table.to_numpy() == pytest.approx(np.eye(5))  # the same ranking every date: nobody moves
+    flipping = _panel(np.array([np.arange(100.0) * (1 if i % 2 == 0 else -1) for i in range(6)]))
+    flipped = ev.quantile_transitions(flipping, quantiles=5)
+    assert flipped.to_numpy() == pytest.approx(np.fliplr(np.eye(5)))  # best becomes worst and back
+    two_on = ev.quantile_transitions(flipping, quantiles=5, horizon=2)
+    assert two_on.to_numpy() == pytest.approx(np.eye(5))
+    assert two_on.columns.name == "to (+2)"
+    assert ev.quantile_transitions(steady, quantiles=5).sum(axis=1).tolist() == pytest.approx([1.0] * 5)

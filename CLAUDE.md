@@ -27,8 +27,8 @@ code. This file adds what a session needs to work here safely. Machine-learning 
 * The repository was called EquityResearch until November 2026 (the `EQR_*` settings, the keyring service
   `equity_research` and the `eqr` command keep their names).
 * Migrations: one history from `0001` in `migrations/versions` (started 2026-11-15 with the multi-asset layout).
-  The first history (0001-0011, schemas `ref` / `market` / `fund`) is kept in `migrations/legacy_equity_research`
-  and never run: `equity_research_local` and Azure's `equity_research` are on it, and the code no longer reads them.
+  The first history (0001-0011, schemas `ref` / `market` / `fund`) was removed on 2026-11-20 (git history has it):
+  `equity_research_local` and Azure's `equity_research` are still on it, and the code no longer reads them.
 
 ## Environment
 
@@ -36,7 +36,9 @@ code. This file adds what a session needs to work here safely. Machine-learning 
   `.venv/Scripts/eqr`, `.venv/Scripts/ruff`, `.venv/Scripts/mypy`) - the shell's `VIRTUAL_ENV` may point at another
   project.
 * Databases: the working database is the local `quant_research_local` (new history, built from the vendors from
-  2026-11-15; `.env` names it), data folder `data/quant_research_local/`. The shared **Azure** database
+  2026-11-15; `.env` names it), data folder `data/quant_research_local/`. Only VS Code reads `.env`: the settings read
+  the environment, then the keyring, so a shell command without `EQR_DB_SERVER='MENONPC\SQLEXPRESS'
+  EQR_DB_NAME=quant_research_local` connects to Azure - set both on every command. The shared **Azure** database
   `equity_research` (with no `EQR_DB_SERVER` set) is still on the old layout: it is to be replaced by a copy of
   `quant_research_local` (`eqr copy-database` into an empty database on the new history) - confirm with the user
   first. It is serverless: the first connection after a pause waits up to a minute while it resumes.
@@ -78,8 +80,9 @@ Data checks: `eqr checks` (the gates) and `eqr audit` (every architecture rule a
   `GET http://localhost:9000/api/throttling/limits`. `get_history` costs one request **per RIC** and returns up to
   ~3,000 days, so prices go in 11-year windows; `get_data` costs one per call. lseg-data cannot build a history mixing
   index levels (no volume) with stocks - levels are asked apart. Builds start on 2000-01-01 (prices from 1998, a year
-  before for momentum): three price windows per RIC; a full build takes three to four days of the allowance; loads
-  resume. Everything answers from 2000, but LSEG's S&P 400 history begins 2001-07-20 and its S&P 600's 2001-01-16
+  before for momentum): three price windows per RIC; a full build of both markets with their estimates took ~14,200
+  requests, two days of the allowance (2026-11-15/16: US 7,933, its estimates 1,674, London 3,552, its estimates
+  1,069 - of which 1,908 were past revision counts, no longer asked); loads resume. Everything answers from 2000, but LSEG's S&P 400 history begins 2001-07-20 and its S&P 600's 2001-01-16
   (every member "joins" that day): before then the S&P 1500 is the S&P 500 alone - start S&P 1500 research in 2002.
   A refresh asks its prices by `get_data` (`TR.PriceClose`, unadjusted: one request per 50 RICs, equal to the
   histories bar for bar) and starts on the first of a month, so a rerun the same day reads back what it landed;
@@ -90,7 +93,10 @@ Data checks: `eqr checks` (the gates) and `eqr audit` (every architecture rule a
   I/B/E/S estimates (`eqr load-estimates`): per-share history is restated to today's shares too (the loader stores it
   in the shares of its own date). Never ask the revision counts (`TR.NumEstRevisingUp`/`Down`) as a history
   (`EDate`/`Frq`): no answer comes and lseg-data re-sends the request at a request each (~1,000 lost on 2026-10-30);
-  the client's runaway guard stops such a call.
+  the client's runaway guard stops such a call. And asked for a past date (`SDate`) they answer **today's** counts:
+  99.6 % of those the 2026-11-17 build asked for 2000-2026 equal each listing's latest. So the loader asks only month
+  ends a month old at most, research reads only counts loaded within `REVISION_LIVE_DAYS` (31) of their date
+  (`qgarp_estimates.live_revisions`), and the audit lists the rest; backtests use the consensus revisions instead.
   Yearly statement items (cash flows, depreciation, bank lines: `fields.ANNUAL_ITEMS`) answer one field per request
   only (two or more: "Backend error"), banks only beside total assets' period end; LSEG's capital ratios are broker
   estimates (never stored). Share issues, buybacks, borrowing and the capital ratios come from the SEC alone.

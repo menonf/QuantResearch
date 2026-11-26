@@ -1,23 +1,23 @@
-"""Barings' QGARP strategy, reconstructed from its rules on our point-in-time data.
+"""The QGARP strategy, reconstructed from its rules on our point-in-time data.
 
-    result = run_barings_garp(cache, BaringsGarpConfig(start="2010-01-01", end="2024-12-31"), engine=engine)
+    result = run_qgarp(cache, QgarpConfig(start="2010-01-01", end="2024-12-31"), engine=engine)
 
 Each factor and composite keeps the strategy's own formula, quirks included. On each month end, among the universe's
 members of the day:
 
 1. **Raw factors** - the Worldscope-based ones from our accounts (:func:`account_factors`), the price-based ones
    from daily prices (:func:`price_factors`), the I/B/E/S ones from analysts' consensus history
-   (:mod:`~equity_research.strategies.barings_estimates`). A factor whose inputs we do not hold yet
+   (:mod:`~equity_research.strategies.qgarp_estimates`). A factor whose inputs we do not hold yet
    (:data:`NOT_YET_BUILT`) is missing, never guessed.
 2. **Cleaning** (:func:`clean`) - a value outside its factor's limits is set missing, not clipped, and financials
-   are left out of factors flagged so. The limits are Barings', a rule set of :mod:`~equity_research.strategies.rules`
-   (:data:`RULE_SETS`) read from the shared ``research.strategy_rule`` table and chosen by a run's ``rules`` setting;
-   without it nothing is removed.
+   are left out of factors flagged so. The limits are the original's, a rule set of
+   :mod:`~equity_research.strategies.rules` (:data:`RULE_SETS`) read from the shared ``research.strategy_rule`` table
+   and chosen by a run's ``rules`` setting; without it nothing is removed.
 3. **Composites** as coded (:func:`composites`): value, growth and quality (with its alpha and defensive halves) as
    percentile ranks of averaged ranks, by industry group; momentum as clipped z-scores of 1-12 month returns; then
    ``qgarp = -(0.2 alpha + 0.1 defensive + 0.3 growth + 0.3 value + 0.1 revisions)`` of each input's rank, a missing
    rank counting as 50.5 (the middle), and ``pct_rank_qgarp`` its percentile rank (1 = best). The weights are
-   Barings' unless a run sets ``qgarp_weights`` - a variant, which may weigh any composite (momentum included).
+   the original's unless a run sets ``qgarp_weights`` - a variant, which may weigh any composite (momentum included).
 4. **Book** - long the best ``enter`` fraction by QGARP, held while inside the best ``exit_`` (a buffer), rebalanced
    monthly, equally weighted or by market value.
 
@@ -76,7 +76,9 @@ from equity_research.data.universe import (
     with_corrections,
 )
 from equity_research.preferences import vendor_preferences
-from equity_research.strategies.barings_estimates import (
+from equity_research.strategies.factor_strategy import WEIGHTINGS
+from equity_research.strategies.factors import dividend_yield
+from equity_research.strategies.qgarp_estimates import (
     ESTIMATE_FACTORS,
     REVISIONS_COMPOSITE,
     EstimateInputs,
@@ -85,8 +87,6 @@ from equity_research.strategies.barings_estimates import (
     load_estimate_inputs,
     revisions_composite,
 )
-from equity_research.strategies.factor_strategy import WEIGHTINGS
-from equity_research.strategies.factors import dividend_yield
 from equity_research.strategies.qgarp_math import div as _div
 from equity_research.strategies.qgarp_math import growth_piecewise
 from equity_research.strategies.qgarp_math import rows_on as _on
@@ -742,13 +742,13 @@ def factor_table(panels: Mapping[str, pd.DataFrame], members: pd.DataFrame, indu
 
 
 FINANCIALS = ("BANK", "INSURANCE", "OTHER FINANCIAL")
-#: Barings' cleaning limits by the name a run asks for them: the rule sets of this strategy in
+#: The original cleaning limits by the name a run asks for them: the rule sets of this strategy in
 #: :mod:`~equity_research.strategies.rules` (files in the repository, shared through the table
 #: ``research.strategy_rule``). The rule set ``gems-2026-11`` holds the limits of November 2026: a lower and an upper
 #: limit for 117 scores, no exclusion of financials. Changed limits are a new name, never a changed set - a registered
 #: run names the limits it used.
-RULE_SETS = {code: spec.file for code, spec in RULE_FILES.items() if spec.strategy == "barings_qgarp"}
-RULE_COLUMNS = ["barings_metric_name", "lower_limit", "upper_limit", "exclude_financials"]
+RULE_SETS = {code: spec.file for code, spec in RULE_FILES.items() if spec.strategy == "qgarp"}
+RULE_COLUMNS = ["metric_name", "lower_limit", "upper_limit", "exclude_financials"]
 
 
 def _as_limits(rules: pd.DataFrame) -> pd.DataFrame:
@@ -791,7 +791,7 @@ def removed_by_rules(table: pd.DataFrame, rules: pd.DataFrame | None) -> pd.Data
         return pd.DataFrame(columns=columns, dtype=float).rename_axis("factor")
     cleaned = clean(table, rules)
     rows = {}
-    for name, its in rules.groupby("barings_metric_name"):
+    for name, its in rules.groupby("metric_name"):
         if name not in table.columns:
             continue
         x = table[name].to_numpy(dtype=float)
@@ -813,7 +813,7 @@ def removed_by_rules(table: pd.DataFrame, rules: pd.DataFrame | None) -> pd.Data
 def clean(table: pd.DataFrame, rules: pd.DataFrame | None = None) -> pd.DataFrame:
     """``table`` with values outside each factor's limits set missing.
 
-    ``rules``: ``[barings_metric_name, lower_limit, upper_limit, exclude_financials]`` (Barings' limits;
+    ``rules``: ``[metric_name, lower_limit, upper_limit, exclude_financials]`` (the original's limits;
     missing limits are not enforced). ``exclude_financials`` 1 leaves out banks, insurers and other financials, 2 banks
     and insurers only. Several rules for one factor keep a value any of them keeps. Without rules nothing changes.
     """
@@ -822,7 +822,7 @@ def clean(table: pd.DataFrame, rules: pd.DataFrame | None = None) -> pd.DataFram
     out = table.copy()
     fin1 = out["industry"].isin(FINANCIALS).to_numpy()
     fin2 = out["industry"].isin(FINANCIALS[:2]).to_numpy()
-    for name, its in rules.groupby("barings_metric_name"):
+    for name, its in rules.groupby("metric_name"):
         if name not in out.columns:
             continue
         x = out[name].to_numpy(dtype=float)
@@ -1215,10 +1215,14 @@ def momentum_composite(table: pd.DataFrame) -> pd.Series:
 
 
 REVISIONS_1_MTH = "zscore_earnings_revisions_1_mth"
-#: The 1-month revisions measured from the consensus (:func:`~.barings_estimates.consensus_revision_factors`): ours, a
+#: The 1-month revisions measured from the consensus (:func:`~.qgarp_estimates.consensus_revision_factors`): ours, a
 #: survivorship-free stand-in for :data:`REVISIONS_1_MTH` in backtests - never for a screen of today's companies.
 CONSENSUS_REVISIONS_1_MTH = "zscore_consensus_revisions_1_mth"
-#: QGARP's inputs and weights: Barings'.
+#: The 4-month consensus revisions (months weighted 0.4 / 0.3 / 0.2 / 0.1), ours too: the 1-month one replaces 70 % of
+#: its top fifth each month, the 4-month one far less, and both are true histories (notebook 3.6's triage: t +2.7 on
+#: the S&P 1500 for the 1-month). Ranked higher-is-better always - it is no stand-in for anything of the original's.
+CONSENSUS_REVISIONS_4_MTH = "zscore_consensus_revisions_4_mth"
+#: QGARP's inputs and weights: the original's.
 QGARP_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("pct_rank_quality_alpha", 0.2),
     ("pct_rank_quality_defensive", 0.1),
@@ -1226,9 +1230,13 @@ QGARP_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("pct_rank_value_composite", 0.3),
     (REVISIONS_1_MTH, 0.1),
 )
-#: What QGARP may weigh: Barings' inputs first (in Barings' order, so its sums are unchanged), then the
+#: What QGARP may weigh: the original's inputs first (in its order, so its sums are unchanged), then the
 #: other composites - momentum among them - and the consensus revisions, for variants.
-QGARP_INPUTS = tuple(dict.fromkeys([name for name, _ in QGARP_WEIGHTS] + COMPOSITES[:-1] + [CONSENSUS_REVISIONS_1_MTH]))
+QGARP_INPUTS = tuple(
+    dict.fromkeys(
+        [name for name, _ in QGARP_WEIGHTS] + COMPOSITES[:-1] + [CONSENSUS_REVISIONS_1_MTH, CONSENSUS_REVISIONS_4_MTH]
+    )
+)
 
 #: The kinds of calculation a factor or composite is, with what each means (for a reader of the triage table).
 CALCULATION_KINDS: dict[str, str] = {
@@ -1375,7 +1383,13 @@ CALCULATIONS: dict[str, str] = {
     "market_capitalization": "level",
     **_kinds(
         "z-score",
-        ["zscore_momentum_composite", REVISIONS_COMPOSITE, REVISIONS_1_MTH, CONSENSUS_REVISIONS_1_MTH],
+        [
+            "zscore_momentum_composite",
+            REVISIONS_COMPOSITE,
+            REVISIONS_1_MTH,
+            CONSENSUS_REVISIONS_1_MTH,
+            CONSENSUS_REVISIONS_4_MTH,
+        ],
     ),
     **_kinds("percentile rank", [n for n in COMPOSITES if n.startswith("pct_rank_")]),
 }
@@ -1421,7 +1435,7 @@ def qgarp(
     z-score is ranked ascending too, which rewards the worst revisions; ``fix_revisions_direction`` ranks it descending
     like the other z-scores (a correction to the original). The consensus revisions, which stand in for those
     revisions in a backtest, are ranked the same way, so a variant changes only where the revisions come from.
-    ``weights`` defaults to Barings' (:data:`QGARP_WEIGHTS`).
+    ``weights`` defaults to the original's (:data:`QGARP_WEIGHTS`).
     """
     df = pd.DataFrame({_DD: dates})
     total = pd.Series(0.0, index=comp.index)
@@ -1455,9 +1469,10 @@ def composites(
     )
     out[REVISIONS_1_MTH] = population_z(table, "earnings_revisions_1_mth")
     out[CONSENSUS_REVISIONS_1_MTH] = population_z(table, "consensus_revisions_1_mth")
+    out[CONSENSUS_REVISIONS_4_MTH] = population_z(table, "consensus_revisions_4_mth")
     out[REVISIONS_COMPOSITE] = _column(table, REVISIONS_COMPOSITE)
     out["pct_rank_qgarp"] = qgarp(out, table[_DD], weights=weights, fix_revisions_direction=fix_revisions_direction)
-    return out[[_DD, "listing_id", *COMPOSITES, REVISIONS_1_MTH, CONSENSUS_REVISIONS_1_MTH]]
+    return out[[_DD, "listing_id", *COMPOSITES, REVISIONS_1_MTH, CONSENSUS_REVISIONS_1_MTH, CONSENSUS_REVISIONS_4_MTH]]
 
 
 def score_panel(comp: pd.DataFrame, name: str) -> pd.DataFrame:
@@ -1502,10 +1517,10 @@ def coverage(table: pd.DataFrame, names: Sequence[str]) -> pd.DataFrame:
 
 
 @dataclass(frozen=True)
-class BaringsGarpConfig:
+class QgarpConfig:
     """Every setting of a run (hashed into its registry entry); the factor rules are the strategy's, fixed.
 
-    ``qgarp_weights`` (Barings' by default) takes a mapping or pairs of any :data:`QGARP_INPUTS`; it is stored
+    ``qgarp_weights`` (the original's by default) takes a mapping or pairs of any :data:`QGARP_INPUTS`; it is stored
     in :func:`qgarp_weights`' one spelling, so equal weights are one config and every change is a new trial.
     ``rules`` names the cleaning limits (a key of :data:`RULE_SETS`); ``None`` cleans nothing, as every run before
     the limits were added did. ``benchmark`` names a fund by its Yahoo symbol (``"SPY"``), measured with its
@@ -1513,7 +1528,7 @@ class BaringsGarpConfig:
     is the index level, without dividends.
     """
 
-    family: str = "barings_qgarp"
+    family: str = "qgarp"
     universe: str = "SP1500"
     start: str = "2010-01-01"
     end: str = "2024-12-31"
@@ -1523,7 +1538,7 @@ class BaringsGarpConfig:
     qgarp_weights: QgarpWeights = QGARP_WEIGHTS
     fix_revisions_direction: bool = False
     estimates: bool = True  # False: the first version, before the I/B/E/S estimates were loaded
-    rules: str | None = None  # the cleaning limits, by name: "gems-2026-11" holds Barings'
+    rules: str | None = None  # the cleaning limits, by name: "gems-2026-11" holds the original's
     benchmark: str | None = None  # a fund's Yahoo symbol, measured with its dividends; None: the universe's own
     price_vendors: tuple[str, ...] = field(default_factory=lambda: vendor_preferences().prices)
     fundamentals_vendor: str | tuple[str, ...] = field(default_factory=lambda: vendor_preferences().fundamentals)
@@ -1535,7 +1550,7 @@ class BaringsGarpConfig:
             raise ValueError(f"no rule set {self.rules!r}; known: {sorted(RULE_SETS)}")
 
 
-def registered_settings(config: BaringsGarpConfig) -> dict[str, Any]:
+def registered_settings(config: QgarpConfig) -> dict[str, Any]:
     """``config`` as the registry stores and hashes it.
 
     A setting added later (``rules``, ``benchmark``) is stored only when it is used: a run that does not use it is
@@ -1549,10 +1564,10 @@ def registered_settings(config: BaringsGarpConfig) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
-class BaringsGarpResult:
+class QgarpResult:
     """The raw and cleaned factors, the composites, the book, the backtest and the summary metrics of a run."""
 
-    config: BaringsGarpConfig
+    config: QgarpConfig
     factors: pd.DataFrame
     composites: pd.DataFrame
     score: pd.DataFrame
@@ -1588,7 +1603,7 @@ def raw_factors(
 
 
 def _scored(
-    raw: pd.DataFrame, data: UniverseData, config: BaringsGarpConfig, rules: pd.DataFrame | None
+    raw: pd.DataFrame, data: UniverseData, config: QgarpConfig, rules: pd.DataFrame | None
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     table = clean(raw, rules)
     comp = composites(table, weights=config.qgarp_weights, fix_revisions_direction=config.fix_revisions_direction)
@@ -1597,7 +1612,7 @@ def _scored(
 
 
 def qgarp_scores(
-    cache: ResearchCache, data: UniverseData, config: BaringsGarpConfig, *, rules: pd.DataFrame | None = None
+    cache: ResearchCache, data: UniverseData, config: QgarpConfig, *, rules: pd.DataFrame | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """``(factors, composites, score)`` on ``data``'s rebalance dates; ``score`` is QGARP with higher meaning better.
 
@@ -1614,21 +1629,19 @@ def qgarp_scores(
     return _scored(raw, data, config, rules if rules is not None else shared_rules(cache, config.rules))
 
 
-def qgarp_book(
-    data: UniverseData, config: BaringsGarpConfig, score: pd.DataFrame, dates: pd.DatetimeIndex
-) -> pd.DataFrame:
+def qgarp_book(data: UniverseData, config: QgarpConfig, score: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
     """The best QGARP names on ``dates`` (with the enter / exit buffer), weighted as ``config`` says."""
     book = quantile_book(score, dates, enter=config.enter, exit_=config.exit_, long_only=True)
     return weighted_by(book, data.market_cap) if config.weighting == "market_cap" else book
 
 
-def run_barings_garp(
+def run_qgarp(
     cache: ResearchCache,
-    config: BaringsGarpConfig,
+    config: QgarpConfig,
     *,
     engine: Engine | None = None,
     rules: pd.DataFrame | None = None,
-) -> BaringsGarpResult:
+) -> QgarpResult:
     """Fence, load, build the factors and composites, hold the best QGARP names, backtest, and register the run.
 
     The factors are cleaned by the rule set ``config.rules`` names - a setting, so a run with limits is a trial of
@@ -1673,6 +1686,4 @@ def run_barings_garp(
     )
     members = data.members.reindex(data.rebalances).fillna(False).astype(bool)
     removed = removed_by_rules(raw, limits)
-    return BaringsGarpResult(
-        config, table, comp, score, book, result, benchmark, members, returns, metrics, run_id, removed
-    )
+    return QgarpResult(config, table, comp, score, book, result, benchmark, members, returns, metrics, run_id, removed)

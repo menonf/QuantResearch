@@ -260,6 +260,12 @@ estimate = sa.Table(
 )
 
 
+#: A revision count is its ``as_of_date``'s only when loaded at most this many days after it. The vendor answers with
+#: the counts of the day it is asked, whatever date the request names (99.6 % of the counts the build of 2026-11-17
+#: asked for 2000-2026 equal each listing's latest), so a count loaded later is a snapshot under an old date: the
+#: loader no longer asks such dates, research skips any held, and the audit lists them.
+REVISION_LIVE_DAYS = 31
+
 estimate_revision = sa.Table(
     "estimate_revision",
     metadata,

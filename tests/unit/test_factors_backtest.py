@@ -13,9 +13,9 @@ from equity_research.strategies.factors import (
 from research_core.analytics.performance import metrics as bt
 from research_core.analytics.performance.metrics import active_performance, decile_returns, performance
 from research_core.data.calendars import rebalance_dates
-from research_core.engine.backtest import run_backtest
-from research_core.engine.finish import deflated_active
-from research_core.engine.portfolio import buffered_selection, quantile_book, weighted_by
+from research_core.engine.backtest import BacktestResult, banded, run_backtest
+from research_core.engine.finish import deflated_active, finish_run
+from research_core.engine.portfolio import buffered_selection, capped, quantile_book, quantile_books, weighted_by
 
 DAYS = pd.bdate_range("2024-01-01", periods=6)
 
@@ -233,3 +233,67 @@ def test_deflating_by_more_trials_lowers_the_probability() -> None:
     net = benchmark + rng.normal(0.0001, 0.002, len(days))
     ten, twenty = deflated_active(net, benchmark, 0.4, 10), deflated_active(net, benchmark, 0.4, 20)
     assert 0 < twenty < ten < 1
+
+
+def test_a_cap_holds_each_name_under_it_and_shares_out_the_excess() -> None:
+    book = pd.DataFrame({1: [0.6], 2: [0.25], 3: [0.15], 4: [-0.7], 5: [-0.3]}, index=DAYS[:1])
+    out = capped(book, 0.4)
+    assert out.loc[DAYS[0], 1] == pytest.approx(0.4)
+    # the 0.2 over the cap goes to the others in proportion: 0.25 and 0.15 become 0.375 and 0.225
+    assert out.loc[DAYS[0], 2] == pytest.approx(0.375) and out.loc[DAYS[0], 3] == pytest.approx(0.225)
+    assert out.iloc[0].clip(lower=0).sum() == pytest.approx(1.0)
+    # a short leg of two names cannot fit under 0.4 each: it ends equally weighted, its total kept
+    assert out.loc[DAYS[0], [4, 5]].to_numpy().tolist() == pytest.approx([-0.5, -0.5])
+
+
+def test_a_drift_band_leaves_holdings_alone_and_trades_only_what_changed() -> None:
+    returns = pd.DataFrame({1: [0.0, 0.05, 0.0, 0.0, 0.0, 0.0], 2: [0.0, -0.05, 0.0, 0.0, 0.0, 0.0]}, index=DAYS)
+    book = pd.DataFrame({1: [0.5, 0.5], 2: [0.5, 0.5]}, index=[DAYS[0], DAYS[2]])  # the same names, equal weights
+    every = run_backtest(book, returns, cost_bps=10.0)
+    loose = run_backtest(book, returns, cost_bps=10.0, drift_band=0.2)
+    assert every.turnover.loc[DAYS[3]] == pytest.approx(0.05)  # back to 50/50 from 52.5/47.5
+    assert loose.turnover.loc[DAYS[3]] == 0.0  # 5 % off target is inside the band: no trade
+    # an entry or an exit trades; the kept names keep their drifted weights, the entry absorbs the rest
+    out = banded(np.array([0.5, 0.0, 0.5]), np.array([0.55, 0.45, 0.0]), 0.2)
+    assert out.tolist() == pytest.approx([0.55, 0.0, 0.45])
+    assert banded(np.array([0.5, 0.5]), np.array([0.7, 0.3]), 0.2).tolist() == pytest.approx([0.5, 0.5])
+
+
+def test_quantile_books_hold_each_fifth_equally() -> None:
+    days = pd.to_datetime(["2020-01-31", "2020-02-29", "2020-03-31"])
+    score = pd.DataFrame([np.arange(1.0, 11.0), np.arange(10.0, 0.0, -1.0), [1.0, 2.0] + [np.nan] * 8], index=days)
+    books = quantile_books(score, pd.DatetimeIndex(days), quantiles=5)
+    assert sorted(books) == [1, 2, 3, 4, 5]
+    assert list(books[5].index) == list(days[:2])  # two names on the last date: too few for five fifths
+    assert books[5].iloc[0].to_dict() == {i: (0.5 if i in (8, 9) else 0.0) for i in range(10)}  # the highest scores
+    assert books[1].iloc[1].to_dict() == {i: (0.5 if i in (8, 9) else 0.0) for i in range(10)}  # reversed: lowest
+    for book in books.values():
+        assert book.sum(axis=1).tolist() == pytest.approx([1.0, 1.0])
+    held = np.sum([(b > 0).to_numpy() for b in books.values()], axis=0)
+    assert (held == 1).all()  # every name in one fifth on every date
+
+
+def test_capture_measures_the_rising_and_falling_months_apart() -> None:
+    months = pd.date_range("2020-01-31", periods=24, freq="ME")
+    bench = pd.Series(np.where(np.arange(24) % 3 == 0, -0.02, 0.015), index=months)
+    same = bt.capture(bench, bench)
+    assert (same["up_capture"], same["down_capture"]) == pytest.approx((1.0, 1.0))
+    cash = bt.capture(bench * 0.0, bench)
+    assert (cash["up_capture"], cash["down_capture"]) == pytest.approx((0.0, 0.0))
+    defensive = bt.capture(bench.clip(lower=0.0), bench)  # all of the rises, none of the falls
+    assert defensive["up_capture"] == pytest.approx(1.0) and defensive["down_capture"] == pytest.approx(0.0)
+    assert np.isnan(bt.capture(bench.iloc[:2], bench.iloc[:2])["down_capture"])  # one falling month measures nothing
+
+
+def test_a_monthly_backtest_is_measured_at_twelve_periods_a_year() -> None:
+    months = pd.date_range("2020-01-31", periods=36, freq="ME")
+    r = pd.Series(np.random.default_rng(5).normal(0.005, 0.02, 36), index=months)
+    result = BacktestResult(r, r, pd.Series(0.5, index=months), r * 0.0, pd.DataFrame(index=months))
+    metrics, run_id = finish_run(
+        result, r * 0.5, {"x": 1}, asset_class="fixed_income", family="f", engine=None, holdout=False,
+        periods_per_year=12,
+    )  # fmt: skip
+    assert run_id is None
+    assert metrics["cagr"] == pytest.approx(performance(r, periods_per_year=12)["cagr"])
+    assert metrics["turnover"] == pytest.approx(6.0)  # 0.5 a month
+    assert metrics["beta"] == pytest.approx(2.0)

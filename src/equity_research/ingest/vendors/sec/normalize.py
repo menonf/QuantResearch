@@ -98,7 +98,7 @@ ITEM_TAGS: dict[str, tuple[str, ...]] = {
     "shares_cover": ("dei:EntityCommonStockSharesOutstanding",),
     "shares_weighted_basic": ("WeightedAverageNumberOfSharesOutstandingBasic",),
     "shares_weighted_diluted": ("WeightedAverageNumberOfDilutedSharesOutstanding",),
-    # added 2026-10-31 for Barings' GEMS factors: depreciation, inventories, financing flows, unusual items, banks
+    # added 2026-10-31 for the GEMS factors: depreciation, inventories, financing flows, unusual items, banks
     "depreciation": (
         "DepreciationDepletionAndAmortization",
         "DepreciationAndAmortization",

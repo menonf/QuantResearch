@@ -115,7 +115,7 @@ def test_the_shared_reads_return_what_every_research_loader_needs(tmp_path: Path
 
 
 def test_a_pound_universe_keeps_its_pound_accounts(tmp_path: Path) -> None:
-    # the Barings GARP inputs once read accounts without the universe's currency: every pound fact was left out
+    # the QGARP inputs once read accounts without the universe's currency: every pound fact was left out
     facts = financial_facts(_cache(tmp_path), pd.Series([1]), ("sec",))
     assert "sec" in vendor_items(facts, ("sec",), "GBP")
     assert "sec" not in vendor_items(facts, ("sec",), "USD")

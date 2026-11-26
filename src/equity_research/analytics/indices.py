@@ -231,8 +231,16 @@ def cap_weighted(returns: pd.DataFrame, market_cap: pd.DataFrame, members: pd.Da
     """``[return, names, covered]`` per day: the members' returns weighted by yesterday's market value.
 
     ``covered`` is the share of the day's members that could be weighted (a price, a return and a share count);
-    the others are left out and the rest re-weighted.
+    the others are left out and the rest re-weighted. ``market_cap`` must be daily: a panel dated on rebalance dates
+    only (``UniverseData.market_cap``) would leave every other day without a return, so it is refused - such a
+    universe's index is ``construction.index_returns``.
     """
+    missing = pd.DatetimeIndex(returns.index).difference(pd.DatetimeIndex(market_cap.index))
+    if len(missing) > len(returns.index) // 10:
+        raise ValueError(
+            f"market values are missing on {len(missing)} of {len(returns.index)} days: cap_weighted needs daily "
+            "values (for one dated on rebalance dates, hold the weights between them: construction.index_returns)"
+        )
     cap = market_cap.shift(1).where(members)
     usable = cap.notna() & returns.notna() & (cap > 0)
     weights = cap.where(usable)

@@ -524,3 +524,31 @@ def test_bars_quoted_in_another_currency_are_read_in_the_universes() -> None:
     out = in_currency(bars, rates, "GBP")
     assert out["close"].iloc[0] == pytest.approx(104.6) and out["close"].iloc[1] == pytest.approx(138.45 / 1.25)
     assert out["currency"].tolist() == ["GBP", "GBP", "JPY"]  # no rate for yen: left to check_currency to name
+
+
+def test_a_yield_over_a_negative_enterprise_value_is_missing_not_negative() -> None:
+    # cash above market value and debt: EBIT / EV would be negative and rank a profitable cash box as dearest
+    base = {
+        "shares": 100.0,
+        "net_income": 130.0,
+        "equity": 1000.0,
+        "revenue": 520.0,
+        "ebit": 200.0,
+        "operating_income": 200.0,
+        "total_debt": 0.0,
+        "current_assets": 1800.0,
+        "current_liabilities": 300.0,
+        "fixed_assets": 500.0,
+        "total_assets": 3000.0,
+        "total_liabilities": 2000.0,
+        "retained_earnings": 600.0,
+        "gross_profit": 260.0,
+        "interest_expense": -5.0,
+    }
+    fund = pd.DataFrame([base | {"listing_id": 7, "cash": 1500.0}, base | {"listing_id": 8, "cash": 100.0}])
+    fund = fund.assign(date=pd.Timestamp("2020-06-30"), **{"known_at:shares": pd.Timestamp("2020-06-30")})
+    close = pd.DataFrame({7: [10.0], 8: [10.0]}, index=pd.to_datetime(["2020-06-30"]))
+    factor = pd.DataFrame(1.0, index=close.index, columns=close.columns)
+    r = ratio_panel(fund.set_index(["date", "listing_id"]), close, factor)
+    assert pd.isna(r.loc[(pd.Timestamp("2020-06-30"), 7), "EBIT/EV"])  # EV = 1000 - 1500 < 0
+    assert r.loc[(pd.Timestamp("2020-06-30"), 8), "EBIT/EV"] == pytest.approx(200 / 900)

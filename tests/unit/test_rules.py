@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from equity_research.strategies import barings_garp as bg
+from equity_research.strategies import qgarp as qg
 from equity_research.strategies import rules as ru
 from research_core.data.db.schema import RULE_TYPES
 
@@ -23,7 +23,7 @@ def test_a_rule_file_is_read_as_subject_type_and_value() -> None:
     assert set(rules["rule_type"]) == {"lower_limit", "upper_limit"} <= set(RULE_TYPES)
     assert not rules.duplicated(["subject", "rule_type"]).any() and rules["value"].notna().all()
     assert rules.equals(rules.sort_values(["subject", "rule_type"], ignore_index=True))  # one order
-    assert GEMS.strategy == "barings_qgarp" and "gems-2026-11" in bg.RULE_SETS
+    assert GEMS.strategy == "qgarp" and "gems-2026-11" in qg.RULE_SETS
 
 
 def test_the_checksum_names_the_rules_not_their_order() -> None:

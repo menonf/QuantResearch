@@ -10,7 +10,8 @@
 The reference rows every database holds alike - vendors (fixed ids, so tables copy between databases unchanged), asset
 classes, instrument types and identifier codes - are seeded here. An asset class added later creates its schema and
 inserts its own rows (``core.asset_class``, ``core.instrument_type``, ``core.id_type``) in its migration; the shared
-tables do not change. This history replaces the first one (``migrations/legacy_equity_research``).
+tables do not change. This history replaces the first one (schemas ``ref``, ``market``, ``fund``; removed from the
+repository on 2026-11-20, git history has it).
 
 Revision ID: 0001
 Revises:

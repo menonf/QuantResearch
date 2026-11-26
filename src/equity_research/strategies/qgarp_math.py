@@ -1,4 +1,4 @@
-"""Arithmetic shared by the Barings QGARP factors: division without infinities and the strategy's growth sign rules."""
+"""Arithmetic shared by the QGARP factors: division without infinities and the strategy's growth sign rules."""
 
 from __future__ import annotations
 

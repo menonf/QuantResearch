@@ -1,4 +1,4 @@
-barings_metric_name,rule_type,rule_value
+metric_name,rule_type,rule_value
 12_mth_price_return_local,upper_limit,5
 12_mth_price_return_usd,upper_limit,5
 1_mth_price_return_local,upper_limit,5

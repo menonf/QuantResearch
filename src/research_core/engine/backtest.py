@@ -35,6 +35,35 @@ class BacktestResult:
         }
 
 
+def banded(target: np.ndarray, drifted: np.ndarray, band: float) -> np.ndarray:
+    """The weights a rebalance trades to when a holding may drift up to ``band`` (relative) away from its target.
+
+    Resetting every holding to its target each month trades for nothing - an equal-weighted book whose names did not
+    change still buys back its laggards and sells its winners. Here a name held on the same side before and after
+    keeps its drifted weight while within ``band`` of its target; entries, exits and names that drifted further trade
+    to their targets, scaled so each side keeps its target total (all of a side's names are scaled when that is the
+    only way). ``band`` 0 trades everything to its target.
+    """
+    out = target.astype(float).copy()
+    if band <= 0:
+        return out
+    held = (np.sign(target) == np.sign(drifted)) & (target != 0)
+    keep = held & (np.abs(drifted - target) <= band * np.abs(target))
+    out[keep] = drifted[keep]
+    for side in (target > 0, target < 0):
+        want = float(target[side].sum())
+        if want == 0:
+            continue
+        traded = side & ~keep
+        rest = float(out[traded].sum())
+        needed = want - float(out[side & keep].sum())
+        if rest != 0 and needed / rest > 0:
+            out[traded] *= needed / rest
+        else:  # the kept names alone overshoot the side's total: scale the whole side
+            out[side] *= want / float(out[side].sum())
+    return out
+
+
 def run_backtest(
     book: pd.DataFrame,
     returns: pd.DataFrame,
@@ -43,6 +72,7 @@ def run_backtest(
     borrow_bps: pd.DataFrame | float = 0.0,
     buy_tax_bps: pd.DataFrame | float = 0.0,
     periods_per_year: int = TRADING_DAYS,
+    drift_band: float = 0.0,
 ) -> BacktestResult:
     """Simulate ``book`` (target weights on rebalance dates) over ``returns`` (daily, ``date x instrument``).
 
@@ -50,7 +80,8 @@ def run_backtest(
     a tax on buying a long holding only (UK stamp duty: not on sales, nor on shorts, taken as contracts for
     difference). Each can be a scalar or a ``date x instrument`` panel (size-segment costs). A missing return counts
     as 0 for a held name. ``periods_per_year`` is how many of ``returns``' periods make a year: the borrow fee is
-    charged a period at a time.
+    charged a period at a time. ``drift_band`` lets a holding drift that far (relative) from its target before it is
+    traded back (:func:`banded`); 0 trades every name to its target at each rebalance.
     """
     names = book.columns
     returns = returns.reindex(columns=names).fillna(0.0)
@@ -71,7 +102,7 @@ def run_backtest(
     previous: pd.Timestamp | None = started[-1] if len(started) else None
     for i, d in enumerate(days):
         if previous is not None and previous in targets.index:  # trade at the previous close, earn from today
-            target = targets.loc[previous].to_numpy(dtype=float)
+            target = banded(targets.loc[previous].to_numpy(dtype=float), w, drift_band)
             traded = np.abs(target - w)
             turnover[i] = traded.sum()
             bought = np.maximum(np.maximum(target, 0.0) - np.maximum(w, 0.0), 0.0)  # long holdings added to
