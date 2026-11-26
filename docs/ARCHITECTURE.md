@@ -82,7 +82,7 @@ their own too: `data/<database>/cache/<asset class>/`, `data/<database>/research
 | `asset_class` | `asset_class` | the asset classes (`equity`, `fixed_income`): each is a package and a schema of the same name |
 | `instrument_type` | `instrument_type` | what a listing can be, and the asset class that loads and studies it: equity, etf, fund (a closed-end fund, a UK investment trust: an index member, but research leaves it out) and index (an equity index's level) are the equity research's; bond the fixed income research's; fx (one unit of a currency priced in US dollars: an exchange rate) belongs to none - every asset class may convert with it |
 | `id_type` | `id_type` | the kinds of code an issuer or listing is known by, each described |
-| `vendor` | `vendor_id` | the data sellers with fixed small ids (1 refinitiv / LSEG, 2 sec, 3 yahoo, 4 financedatabase, 5 norgate, 6 tiingo, 7 simfin, 8 sraf - Notre Dame's Loughran-McDonald dictionary, 9 repository - corrections this repository states itself), used by every other table and the same in every database |
+| `vendor` | `vendor_id` | the data sellers with fixed small ids (1 refinitiv / LSEG, 2 sec, 3 yahoo, 4 financedatabase, 5 norgate, 6 tiingo, 7 simfin, 8 sraf - Notre Dame's Loughran-McDonald dictionary, 9 repository - corrections this repository states itself, 10 ice - its bond indices' constituent files, 11 fred - their official levels), used by every other table and the same in every database |
 | `issuer` | `issuer_id` | a company (or another issuer: a bond's):  name, `domicile_country` (where it is run - not where its shares trade, which is the listing's exchange), `incorporation_country` (where it is registered: UK stamp duty follows it) |
 | `listing` | `listing_id` | one tradable line - a share class, an index level, an exchange rate, a bond: the same security whatever it was called (every RIC it had is an identifier: a ticker change does not split its history): `issuer_id` (none for an index level or an exchange rate), share class, exchange (MIC), `currency` (what it is priced in: `USD`, `GBX`, later `USDT`), `instrument_type` (one of `core.instrument_type`), `listed_on`, `delisted_on` |
 | `identifier` | `identifier_id`; unique (`id_type`, `value`, `valid_from`, `market`) | (`entity_type` issuer / listing, `entity_id`, `id_type` - one of `core.id_type`: TICKER / RIC / CUSIP / ISIN / CIK / SEDOL / FIGI / PERMID / YAHOO / NORGATE / SIMFIN / ICE, `value`, `valid_from`, `valid_to`, `market`, `vendor_id` that told us); insert-only - a code held by another entity is reported, never moved. A ticker names a share only among one country's exchanges (London's AAL is Anglo American, Nasdaq's American Airlines), so its `market` (`US`, `GB`, from its listing's exchange) is part of the key; other codes are the same everywhere (`''`). A vendor's tickers match only listings on that vendor's markets |
@@ -103,7 +103,7 @@ in every database (`schema.SEEDED`: a copy compares them, never copies them).
 | `filing` | (`issuer_id`, `vendor_id`, `filing_ref`) | each report: form, period end, fiscal year / period, `published_at` |
 | `financial_fact` | (`issuer_id`, `vendor_id`, `item`, `period_type`, `period_end`, `published_at`) | canonical accounting items: `period_type` Q (3-month flow), YTD, FY (fiscal-year flow), I (balance at an instant). SEC facts are as first reported, each restatement a new row with a later `published_at`; LSEG facts are its quarterly figures dated by their first announcement; SimFin facts are its latest figures, dated by their first publication where the SEC's first report has the same value, else by when SimFin last re-dated them (usually a year later). Every vendor goes through the same ratio code, which is how they are compared |
 | `estimate` | (`listing_id`, `vendor_id`, `measure`, `period`, `as_of_date`) | analysts' consensus (I/B/E/S, through LSEG) as it stood at each month end: mean, median, standard deviation, number of estimates and the fiscal year's end, for EPS, revenue, EBIT, dividends and cash flow per share and ROE, FY1-FY3. Per listing - a per-share forecast belongs to a share class; per-share figures in the shares of their own date (LSEG restates them for every later split; the loader undoes that with LSEG's splits), so a later split never rewrites them |
-| `estimate_revision` | (`listing_id`, `vendor_id`, `measure`, `period`, `as_of_date`) | how many analysts raised and lowered their EPS estimate (FY1, FY2), at each month end, for that day's index members |
+| `estimate_revision` | (`listing_id`, `vendor_id`, `measure`, `period`, `as_of_date`) | how many analysts raised and lowered their EPS estimate (FY1, FY2), at each month end, for that day's index members. **Live only**: the vendor answers with the counts of the day it is asked, whatever date is named, so a count is its date's only when loaded within `REVISION_LIVE_DAYS` (31) of it - the loader asks no older month end, research skips the rest (the build of 2026-11-17 asked 2000-2026: 99.6 % equal each listing's latest), and the audit lists them |
 | `document` | (`issuer_id`, `vendor_id`, `filing_ref`) | every 10-K, 10-Q and 8-K (and amendment) a company filed since 2003, from its EDGAR index: form, filing date, the period or event date, `published_at` - the instant EDGAR accepted it, when it became public - and an 8-K's item codes (2.02 results, 5.02 an officer leaving, 4.02 a restatement...) |
 | `text_measure` | (`issuer_id`, `vendor_id`, `filing_ref`, `section`, `measure`) | what research reads of an annual report's text, which stays in the raw zone (gzip-compressed EDGAR HTML: forty thousand reports would fill the database): word counts by Loughran-McDonald category for the whole report, its MD&A and its risk factors; cosine and Jaccard similarity to the company's previous annual report; FinBERT's tone of sampled MD&A sentences. Each row names its `method` (dictionary edition, model), so a new one re-measures from the raw zone |
 | `estimate_actual` | (`listing_id`, `vendor_id`, `measure`, `period_end`) | each fiscal year's reported figure as the analysts' service counts it (comparable to the estimates) and when it was reported |
@@ -126,7 +126,7 @@ A bond is a `core.listing` (`instrument_type` `bond`) with its ISIN and CUSIP in
 | `ops.job_run` | one row per pipeline run / step with status, rows, detail; an application lock prevents overlapping writers |
 | `ops.check_result` | the outcome of every quality gate |
 | `research.run` | every backtest: its `asset_class` (equity, fixed_income), config, config hash, code version, data snapshot (max `loaded_at`), metrics, whether it touched the hold-out |
-| `research.rule_set` | a named set of rules one strategy applies together (`gems-2026-11`: Barings' cleaning limits): its asset class, strategy, description, source and the checksum of its rules |
+| `research.rule_set` | a named set of rules one strategy applies together (`gems-2026-11`: QGARP's cleaning limits): its asset class, strategy, description, source and the checksum of its rules |
 | `research.strategy_rule` | one rule of a set: its subject (a factor, a composite, `*` for the strategy), its type (`lower_limit`, `upper_limit`, `exclude_financials`, `invert`, `weight`, `threshold`, `setting`) and its value |
 
 ### Adding an asset class (crypto, FX, futures, rates...)
@@ -280,19 +280,24 @@ src/research_core/         shared by every asset class
                            class's method versions
     calendars.py           trading days read off the prices, rebalance dates, the periods in a year
   engine/
-    backtest.py            books to daily returns, with costs, borrow fees and buying taxes
-    portfolio.py           weights: quantile, buffered, by size, beta-neutral
+    backtest.py            books to daily returns, with costs, borrow fees and buying taxes; a drift band
+    portfolio.py           weights: quantile (top and bottom, or every quantile), buffered, by size, capped,
+                           beta-neutral
+    tilt.py                a benchmark plus active tilts on a factor risk model: score over specific risk, neutral
+                           to chosen factors and beta, bounded per name, scaled to a budget of active risk
     allocation.py          predictions to books: deciles and top-K; equal, inverse-volatility, HRP and mean-variance
                            weights; volatility-target, drawdown and Kelly overlays
     registry.py            the run registry, trial counts, deflated Sharpe and the hold-out fence
-    finish.py              a finished backtest measured and registered, the same for every strategy
+    finish.py              a finished backtest measured and registered, the same for every strategy (daily or
+                           monthly periods)
   analytics/
-    performance/           metrics (CAGR, volatility, Sharpe, drawdown; active measures), tracking (tracking error,
-                           by year), periods (returns and risk over a dashboard's periods), holdings (overlap, active
-                           share, concentration, exposures)
+    performance/           metrics (CAGR, volatility, Sharpe, drawdown; active measures, up and down capture),
+                           tracking (tracking error, by year), periods (returns and risk over a dashboard's periods),
+                           holdings (overlap, active share, concentration, exposures)
     risk/                  statistics (historical VaR and CVaR, bias and Q statistics, Kupiec, conditional moves)
     signals/               labels (forward returns, triple barrier, trend scanning), evaluation (IC and its
-                           inference, decay, quantiles, triage), validation (walk-forward folds, purged k-fold)
+                           inference, decay, quantiles and transitions between them, triage), validation
+                           (walk-forward folds, purged k-fold)
 
 src/equity_research/       everything that knows about shares
   cli.py                   the `eqr` command, one sub-command per pipeline
@@ -327,11 +332,15 @@ src/equity_research/       everything that knows about shares
   strategies/
     factors.py             momentum (plain and residual), value, quality, low volatility, net share issuance,
                            cash-flow yield, accruals, magic formula
-    factor_strategy.py     one config -> a registered factor run (long-only or long-short)
-    learned_value.py       a learned value score: the book's ratios -> next year's return, fitted walk-forward
+    factor_strategy.py     one config -> a registered factor run (long-only or long-short): the factor mix, the
+                           construction (quantile, or tilted on the risk model), the benchmark; a book empty on a
+                           rebalance date is refused
+    construction.py        books on the risk model: the universe by market value plus tilts by a score
+    learned_value.py       a learned value score: the book's ratios -> next year's return, fitted walk-forward (and a
+                           steadier one: a rank target, shallow trees averaged over seeds)
     garp.py                the S&P 500 GARP strategy rebuilt from its published rules
-    barings_garp.py        Barings' QGARP reconstructed: factors, composites and a QGARP book;
-                           barings_estimates.py its I/B/E/S factors; qgarp_math.py
+    qgarp.py               QGARP reconstructed: factors, composites and a QGARP book; qgarp_estimates.py its
+                           I/B/E/S factors; qgarp_math.py
     rules.py               strategies' rule sets: their files, checks and checksum, read back through the cache
     runs.py                a registered run rebuilt from its config: its book on a day, its backtest again; a run
                            found by its settings
@@ -348,26 +357,33 @@ src/equity_research/       everything that knows about shares
 src/fixed_income_research/ bond indices from their constituents (ICE's month-end files)
   cli.py                   the `fir` command: load-ice, load-index-levels, checks, sync-cache
   data/                    schema (the bond tables), cache (its own folder: loading bonds never moves the
-                           equity data version), index_data (one index as monthly panels)
+                           equity data version), index_data (one index as monthly panels, cut at a date)
   ingest/                  ice (the constituent files -> canonical rows), fred (official index levels),
                            reference (the indices we know)
   pipelines/               load_ice (a folder of files, new ones only, in any order), load_index_levels
   quality/                 the fixed income gates
-  analytics/               replication: an index rebuilt from its members, and what it is made of
+  analytics/               replication: an index rebuilt from its members, and what it is made of; the leavers'
+                           last month given the index's return, so any book is measured as the index is
+  strategies/
+    factors.py             value (spread over the fitted spread), momentum, size (issuer weight), low risk
+                           (maturity and rating), the composite of their percentiles
+    factor_strategy.py     one config -> every fifth of every signal backtested monthly against the index, the best
+                           fifths registered; the measures, spreads, tilts, point-in-time proof and today's ranking
 
-migrations/                Alembic: one database and one history for every asset class (versions/, from 0001;
-                           legacy_equity_research/ - the first history, kept for reference, never run)
+migrations/                Alembic: one database and one history for every asset class (versions/, from 0001)
 tests/                     unit tests (pure, no I/O) and integration tests (database, marked)
 notebooks/equity/          parameters, explanations and displays - no logic; numbered folder.position
   1_data_ingestion/        1.1 initial load, 1.2 refresh, 1.3 filing text
   2_index_replication/     2.1 S&P 500, 2.2 FTSE All-Share
   3_investment_strategies/ 3.1 long-only, 3.2 long-only extra signals, 3.3 long-only learned value, 3.4 long-short,
-                           3.5 S&P 500 GARP and QGARP, 3.6 Barings QGARP
+                           3.5 S&P 500 GARP and QGARP, 3.6 QGARP, 3.7 revised long-only (specified before
+                           it ran; docs/STRATEGY_REVIEW.md)
   4_portfolio_analytics/   4.1 factor dashboard, 4.2 risk model, 4.3 stock screen
   5_machine_learning/      docs/ML4T_PLAN.md: 5.1 research protocol, 5.2 features, 5.3 linear models, 5.4 gradient
                            boosting, 5.5 ML strategies, 5.6 strategy assessment, 5.7 latent factors, 5.8 deep
                            learning, 5.9 causal ML, 5.10 text features, 5.11 synthetic markets
-notebooks/fixed_income/    1.1 index constituents (load), 2.1 US High Yield (the index rebuilt)
+notebooks/fixed_income/    1.1 index constituents (load), 2.1 US High Yield (the index rebuilt), 3.1 US High Yield
+                           factors (value, momentum, size, low risk)
 ```
 
 What the shared core assumes about an instrument is little: an integer id (`listing_id`: a share line, a fund, an
@@ -378,7 +394,8 @@ the metadata (the migrations, a database copy, an issuer merge) loads every asse
 
 ## 5. Building a database
 
-From an empty database (notebook 1, or `eqr load-lseg`, `eqr load-benchmarks`, `eqr load-sec`):
+From an empty database (notebook 1.1, or `eqr build`, or one source at a time: `eqr load-lseg`, `eqr load-benchmarks`,
+`eqr load-sec`...):
 
 * `load_lseg --market UK` - London: the FTSE 100 / 250 / SmallCap the same way, with what differs there (checked live,
   `eqr probe-lseg-uk`): official closes (`OFF_CLOSE` - London's last trade is often after the closing auction), in pence;
@@ -403,8 +420,8 @@ From an empty database (notebook 1, or `eqr load-lseg`, `eqr load-benchmarks`, `
   spin-offs, monthly share counts and float, quarterly statements with their announcement dates, and yearly items
   LSEG answers only one field per request (cash flows, depreciation, inventories, unusual items, bank lines). LSEG allows 10,000
   requests (and 5 GB) a day, reset at midnight; a price history costs one request per RIC (lseg-data asks per
-  instrument) and returns up to ~3,000 days, so prices are asked in 11-year windows - about 6,500 requests, ~7,550 for
-  a whole build. The client reads the allowance left from Workspace before each call and stops before it runs out;
+  instrument) and returns up to ~3,000 days, so prices are asked in 11-year windows - three from 1998; a whole US build
+  took 7,933 requests (2026-11-15). The client reads the allowance left from Workspace before each call and stops before it runs out;
   every request is landed with its description, so the next run continues.
 * `load_norgate` (instead of LSEG, or beside it) - every symbol ever in the S&P 500 / 400 / 600 (Norgate's "current &
   past" watchlists, delisted ones as `TICKER-YYYYMM`), daily membership turned into intervals, unadjusted prices
@@ -439,9 +456,11 @@ From an empty database (notebook 1, or `eqr load-lseg`, `eqr load-benchmarks`, `
   accounts. `eqr probe-simfin` shows what the account's plan includes and which codes the companies file carries.
 
 * `load_estimates` (after `load_lseg`, whose listings and splits it uses) - analysts' consensus history, reported
-  actuals and revision counts from LSEG (`eqr load-estimates`, `eqr probe-estimates`); ~3,200 requests for 2005 to
-  today (more from the 2000 start), resumable. The consensus answers as a monthly history (one call per group of ~165 RICs, measure and
-  period); the revision counts only one date at a time - asked as a history they never answer, and lseg-data re-sends
+  actuals and revision counts from LSEG (`eqr load-estimates`, `eqr probe-estimates`); ~400 requests from nothing
+  (2026-11-15, from 2000: 300 for the consensus, 100 for the actuals - the 1,264 then spent on past revision counts
+  are no longer asked), resumable. The consensus answers as a monthly history (one call per group of ~165 RICs, measure and
+  period); the revision counts only one date at a time, and only for the latest month end (asked for an older date
+  they answer today's counts) - asked as a history they never answer, and lseg-data re-sends
   the request at one request each until the client's runaway guard stops it. It is a source of its own
   (`estimates`, after `refinitiv` in `EQR_SOURCES`), so `eqr build` and `eqr refresh` run it; the load ends at the
   last month end (fixed request descriptions all month), and a refresh asks only once a new month end has passed

@@ -5,9 +5,9 @@ from typing import cast
 import pandas as pd
 import pytest
 
-from equity_research.strategies.barings_garp import BaringsGarpConfig
 from equity_research.strategies.factor_strategy import StrategyConfig
 from equity_research.strategies.garp import GarpConfig
+from equity_research.strategies.qgarp import QgarpConfig
 from equity_research.strategies.runs import choose_run, config_from, matching_run, newest_by_score, one_universe
 
 VENDORS = {"price_vendors": ("refinitiv",), "fundamentals_vendor": ("sec", "refinitiv")}
@@ -23,7 +23,7 @@ def _stored(config: object) -> dict[str, object]:
     [
         StrategyConfig(family="multi_factor_lo", factors=(("value", 1.0), ("ml_value", 0.5)), **VENDORS),  # type: ignore[arg-type]
         GarpConfig(reference_months=(6, 12), **VENDORS),  # type: ignore[arg-type]
-        BaringsGarpConfig(qgarp_weights={"pct_rank_value_composite": 1.0}, **VENDORS),  # type: ignore[arg-type]
+        QgarpConfig(qgarp_weights={"pct_rank_value_composite": 1.0}, **VENDORS),  # type: ignore[arg-type]
     ],
 )
 def test_every_kind_of_run_is_rebuilt_from_what_the_registry_stored(config: object) -> None:

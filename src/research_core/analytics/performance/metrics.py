@@ -2,6 +2,7 @@
 
     performance(net)                                  # CAGR, volatility, Sharpe, worst drawdown
     active_performance(net, benchmark)                # beta, alpha, active return, tracking error, information ratio
+    capture(net, benchmark)                           # how much of the benchmark's rising and falling months it took
     periods_against(net, benchmark, "2025-01-01")     # the same before and from a boundary (a hold-out's first day)
     decile_returns(score, returns, members)           # what each tenth of a score went on to earn
 
@@ -91,6 +92,27 @@ def periods_against(returns: pd.Series, benchmark: pd.Series, boundary: str | pd
             "active_t": t,
         }
     return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def capture(returns: pd.Series, benchmark: pd.Series) -> dict[str, float]:
+    """``up_capture`` and ``down_capture``: how much of the benchmark's rises, and of its falls, the book took part in.
+
+    On monthly returns (:func:`monthly_pair`): the book's growth rate a year over the months the benchmark rose, divided
+    by the benchmark's over the same months - and the same over the months it fell. A book with up capture above its
+    down capture gained more than it gave back; a down capture above 1 fell further than the benchmark in its bad
+    months. Missing with fewer than two such months.
+    """
+    m = monthly_pair(returns, benchmark)
+    out = {}
+    for key, months in (("up_capture", m["b"] > 0), ("down_capture", m["b"] < 0)):
+        r, b = m.loc[months, "r"].to_numpy(dtype=float), m.loc[months, "b"].to_numpy(dtype=float)
+        if len(b) < 2:
+            out[key] = float("nan")
+            continue
+        rate_r = float(np.prod(1.0 + r) ** (MONTHS / len(r)) - 1.0)
+        rate_b = float(np.prod(1.0 + b) ** (MONTHS / len(b)) - 1.0)
+        out[key] = rate_r / rate_b if rate_b != 0 else float("nan")
+    return out
 
 
 def active_performance(returns: pd.Series, benchmark: pd.Series) -> dict[str, float]:

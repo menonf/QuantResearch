@@ -220,3 +220,10 @@ def test_a_lock_lost_with_its_session_is_not_given_back() -> None:
     dead = _DeadLock()
     ops._release(cast(Connection, dead), lost=True)  # used to raise PendingRollbackError after the job's work was done
     assert dead.closed
+
+
+def test_only_month_ends_a_month_old_at_most_are_asked_for_revision_counts() -> None:
+    # an older month end would come back with today's counts under its date
+    days = load_estimates_module.revision_days("2000-01-01", "2026-10-31", dt.date(2026, 11, 20))
+    assert days == ["2026-10-31"]
+    assert load_estimates_module.revision_days("2000-01-01", "2026-09-30", dt.date(2026, 11, 20)) == []

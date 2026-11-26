@@ -61,7 +61,7 @@ the full history.
 ```
 vendors ──> raw zone ──────────────────> canonical model ──────────> local cache ──────> research
             data/<db>/raw, immutable,     SQL Server / Azure SQL       Parquet + DuckDB     panels, factors,
-            one ingest.batch per answer   ref / market / fund          per researcher       backtests, registry
+            one ingest.batch per answer   core / equity / fixed_income per researcher       backtests, registry
                                           facts as reported
 ```
 
@@ -74,8 +74,8 @@ vendors ──> raw zone ──────────────────>
 
 | Source | Supplies | Needs |
 |---|---|---|
-| `refinitiv` (LSEG) | US: index members with history, listings and codes, sectors, daily prices, dividends and splits, share counts and float, statements | LSEG Workspace signed in; a full build uses ~7,500 of its 10,000 daily requests and resumes if stopped |
-| `estimates` (LSEG) | analysts' estimates (I/B/E/S): monthly consensus history, reported actuals, revision counts | LSEG Workspace; ~3,200 requests from nothing |
+| `refinitiv` (LSEG) | US: index members with history, listings and codes, sectors, daily prices, dividends and splits, share counts and float, statements | LSEG Workspace signed in; a full build uses ~7,900 of its 10,000 daily requests and resumes if stopped |
+| `estimates` (LSEG) | analysts' estimates (I/B/E/S): monthly consensus history, reported actuals, revision counts | LSEG Workspace; ~400 requests from nothing (revision counts only for the latest month end) |
 | `refinitiv_uk`, `estimates_uk` (LSEG) | London: FTSE 100 / 250 / SmallCap members, official closes in pence, dividends, splits, share counts, half-yearly statements as first reported, estimates in pounds | LSEG Workspace; ~4,000 requests from nothing |
 | `norgate` | index members with history, listings incl. delisted, unadjusted prices, splits and dividends, GICS | Norgate Data Updater with a subscription |
 | `sec` | company accounts as first reported, with every correction | a contact name and e-mail (the SEC asks for one) |
@@ -84,9 +84,10 @@ vendors ──> raw zone ──────────────────>
 | `tiingo` | unadjusted prices, dividends and splits for listings other sources found, cross-checked | an API key |
 | `simfin` | standardised statements, banks and insurers included; its own sector labels | an API key |
 
-The default build runs `refinitiv, estimates, refinitiv_uk, estimates_uk, yahoo, financedatabase, sec`, in that
-order - about 15,000 LSEG requests, so two or three days of its allowance; a build stopped by the allowance continues
-the next day. Choosing others is a setting - a build without LSEG, for example:
+The default build runs `refinitiv, estimates, refinitiv_uk, estimates_uk, yahoo, financedatabase, sec, repository`
+(the repository's own corrections, last), in that order - about 12,500 LSEG requests, so two days of its
+allowance; a build stopped by the allowance continues the next day. Choosing others is a setting - a build without
+LSEG, for example:
 
 ```sh
 EQR_SOURCES=norgate,yahoo,financedatabase,sec  EQR_PRICE_VENDORS=norgate  EQR_MEMBER_VENDORS=norgate  uv run eqr build
@@ -128,7 +129,7 @@ uv run eqr load-lseg         # one source alone (--market UK for London) - also 
                              #   probe-lseg, probe-lseg-uk, probe-norgate, probe-tiingo, probe-simfin, probe-estimates
 uv run eqr load-sec-text --tone --tone-device cuda
                              # filing index, annual reports (10-K) and their text measures; --tone adds FinBERT
-uv run eqr load-rules        # the repository's strategy rule sets (Barings' cleaning limits...) into the shared
+uv run eqr load-rules        # the repository's strategy rule sets (QGARP's cleaning limits...) into the shared
                              #   tables research.rule_set / research.strategy_rule; a loaded set is never changed
 uv run eqr load-corrections  # corporate actions no vendor recorded (ingest/corrections/corporate_actions.csv:
                              #   Alphabet's class C shares of 2014...), written under vendor `repository`
@@ -151,7 +152,8 @@ uv sync --all-groups     # Python 3.13 or later: the three packages, the Jupyter
 
 Open the repository in VS Code (or start Jupyter from it) and choose the `.venv` interpreter as the kernel. Three
 optional groups are needed by a few notebooks only: `ml` (LightGBM, Optuna) by 5.4, `deep` (torch) by 5.7 and 5.8,
-`text` (transformers, for FinBERT) by 1.3. One notebook from the command line:
+`text` (transformers, for FinBERT) by 1.3; a fourth, `vendors` (norgatedata), by a build from Norgate. One notebook
+from the command line:
 
 ```sh
 uv run jupyter execute --inplace --timeout=-1 notebooks/equity/2_index_replication/01_sp500.ipynb
@@ -168,7 +170,7 @@ Nothing ships with the repository: `data/` is not in git, and the vendors' data 
   default sources), or Norgate Data (`EQR_SOURCES=norgate,yahoo,financedatabase,sec`; see *Data sources*). The SEC,
   Yahoo and FinanceDatabase are free; the SEC asks for a contact (`EQR_SEC_USER_AGENT="name e-mail"`);
 * **notebook 1.1 run once** (or `uv run eqr build`): it creates the tables, loads every source, runs the quality
-  gates and syncs the local research cache. With LSEG that is two to three days of its daily allowance; a build
+  gates and syncs the local research cache. With LSEG that is two days of its daily allowance; a build
   stopped by the allowance continues where it stopped.
 
 After that the research notebooks read the local cache (`data/<database>/cache/<asset class>`) and, where they register a run,
@@ -204,7 +206,8 @@ same way, under `notebooks/fixed_income/` (listed after them).
 | 3.3 | [Learned value score](notebooks/equity/3_investment_strategies/03_long_only_learned_value.ipynb) | a machine-learned value score (after *Build Your Own AI Investor*), trained walk-forward, against the plain one |
 | 3.4 | [Multi-factor long-short](notebooks/equity/3_investment_strategies/04_multifactor_long_short.ipynb) | a beta-neutral long-short strategy; explains the run registry, the deflated Sharpe ratio and the hold-out |
 | 3.5 | [S&P 500 GARP and QGARP](notebooks/equity/3_investment_strategies/05_sp500_garp_and_qgarp.ipynb) | the S&P 500 GARP index rebuilt from its published rules; Part 2 runs 3.6's QGARP on the same universe |
-| 3.6 | [Barings QGARP](notebooks/equity/3_investment_strategies/06_barings_qgarp.ipynb) | Barings' QGARP strategy reconstructed from its rules, and a book of its best names against SPTM |
+| 3.6 | [QGARP](notebooks/equity/3_investment_strategies/06_qgarp.ipynb) | the QGARP strategy reconstructed from its rules, and a book of its best names against SPTM |
+| 3.7 | [Revised long-only](notebooks/equity/3_investment_strategies/07_revised_long_only.ipynb) | the review's revised specification ([docs/STRATEGY_REVIEW.md](docs/STRATEGY_REVIEW.md)), written down before it ran: once on the S&P 1500, then unchanged on the FTSE All-Share |
 
 **`4_portfolio_analytics/`** - performance, risk and attribution of what the strategies hold
 
@@ -238,6 +241,7 @@ database migrated to the latest schema; nothing from the equity notebooks
 |---|---|---|
 | 1.1 | [Index constituents](notebooks/fixed_income/1_data_ingestion/01_index_constituents.ipynb) | loads the files (bonds, issuers, weights, analytics), the index's official level from FRED, runs the gates, syncs the cache |
 | 2.1 | [US High Yield](notebooks/fixed_income/2_index_replication/01_us_high_yield.ipynb) | rebuilds the ICE BofA US High Yield Index from its bonds, against the official index; its spread, yield, duration and ratings |
+| 3.1 | [US High Yield factors](notebooks/fixed_income/3_investment_strategies/01_us_high_yield_factors.ipynb) | value, momentum, size and low risk in the index: every fifth of every signal backtested, each signal's best fifth registered |
 
 Three things to know before running everything:
 
@@ -251,7 +255,7 @@ Three things to know before running everything:
 
 ```python
 from research_core.data.db.engine import get_engine
-from research_core.data.cache import ResearchCache
+from equity_research.data.cache import ResearchCache
 from equity_research.strategies.factor_strategy import StrategyConfig, run_strategy
 
 cfg = StrategyConfig(family="value_quality_ls", universe="SP1500", factors=(("value", 1.0), ("quality", 1.0)))
@@ -270,29 +274,33 @@ src/
                             raw_store (the raw zone), ops (job runs, writer lock), quality (checks as gates),
                             identity (issuers, listings, identifiers), cache (the research cache), artifact_store,
                             calendars
-    engine/                 backtest (books to returns), portfolio (scores to weights), allocation, registry (runs,
-                            trials, deflated Sharpe, hold-out), finish (a run measured and registered)
+    engine/                 backtest (books to returns), portfolio (scores to weights), tilt (a benchmark plus tilts
+                            on a risk model), allocation, registry (runs, trials, deflated Sharpe, hold-out), finish
+                            (a run measured and registered)
     analytics/              performance/ (metrics, tracking, periods, holdings), risk/ (statistics),
                             signals/ (labels, evaluation, validation)
   equity_research/          everything that knows about shares - it imports research_core only
     cli.py                  the `eqr` command
     preferences.py          which vendor supplies what
     data/                   the equity tables, the research cache's table list, the artifact store bound to the
-                            returns method, panels, accounting, ratios, sectors, universe (a backtest's data)
+                            returns method, reads, panels, accounting, ratios, compare, sectors, universe (a
+                            backtest's data)
     ingest/                 vendors/<vendor>/ adapters, membership, reference, classification, countries, corrections
     pipelines/              sources, load_<vendor>, load_estimates, load_sec_text, load_rules, load_corrections, refresh
     quality/                the equity gates; the audit
-    strategies/             factors, factor_strategy, learned_value, garp, barings_garp (QGARP), rules, runs
+    strategies/             factors, factor_strategy, construction, learned_value, garp, qgarp (with
+                            qgarp_estimates, qgarp_math), rules, runs
     analytics/              indices, dashboard, screen, risk/ (the BFRE factor risk model, a portfolio's risk)
     ml/                     the machine-learning plan: features, models, strategies, their assessment
     research/               helpers for the notebooks only
     regression.py           the regression check: strategies and the risk model measured again
   fixed_income_research/    bond indices from their constituents - it imports research_core only
     cli.py                  the `fir` command
-    data/ ingest/ pipelines/ quality/ analytics/    see its README
+    data/ ingest/ pipelines/ quality/ analytics/ strategies/    see its README
 migrations/                 Alembic: one database, one history for every asset class
-notebooks/equity/           the five folders above;  notebooks/fixed_income/  1.1 and 2.1
-docs/                       ARCHITECTURE.md (the design), ML4T_PLAN.md (the machine-learning plan and its log)
+notebooks/equity/           the five folders above;  notebooks/fixed_income/  1.1, 2.1 and 3.1
+docs/                       ARCHITECTURE.md (the design), ML4T_PLAN.md (the machine-learning plan and its log),
+                            STRATEGY_REVIEW.md (the review of the strategy notebooks and what was done)
 tests/                      unit/ (pure) and integration/ (a scratch database on a local SQL Server)
 ```
 

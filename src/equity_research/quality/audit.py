@@ -23,6 +23,7 @@ import pycountry
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
+from equity_research.data.schema import REVISION_LIVE_DAYS
 from equity_research.preferences import vendor_preferences
 from equity_research.quality.checks import _MEMBER_DAYS_CTE, PROVENANCED
 from research_core.data.db.schema import VENDORS
@@ -82,6 +83,7 @@ def audit(engine: Engine, *, raw_dir: Path | None = None, sample: int = CHECKSUM
     _membership(a)
     _prices(a)
     _accounts(a)
+    _estimates(a)
     _fitness(a)
     _lineage(a, sample)
     _ops(a)
@@ -332,6 +334,19 @@ def _accounts(a: _Audit) -> None:
         "WHERE f.vendor_id = 2 AND f.filing_ref IS NOT NULL AND NOT EXISTS "
         "(SELECT 1 FROM equity.filing g WHERE g.issuer_id = f.issuer_id AND g.vendor_id = 2 AND g.filing_ref = "
         "f.filing_ref)",
+    )
+
+
+def _estimates(a: _Audit) -> None:
+    # LSEG answers a revision count with the day's count whatever date is asked: one asked long after its month end
+    # is today's count under an old date (qgarp_estimates.live_revisions; research skips it)
+    a.none(
+        "estimates",
+        f"revision counts were asked within {REVISION_LIVE_DAYS} days of their month end",
+        "SELECT COUNT(*) FROM equity.estimate_revision "
+        f"WHERE DATEDIFF(day, as_of_date, loaded_at) NOT BETWEEN 0 AND {REVISION_LIVE_DAYS}",
+        "these are the counts of the day they were loaded, not of their date: research reads none of them, and "
+        "they can be deleted",
     )
 
 

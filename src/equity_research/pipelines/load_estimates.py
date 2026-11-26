@@ -10,9 +10,11 @@ Steps (each needs the listings ``load_lseg`` created, and uses its splits):
    stood at each month end (mean, median, standard deviation, number of estimates, the fiscal year's end), for every
    equity listing, in :data:`BUCKETS` groups of RICs: one call per group answers the whole history.
 2. ``actuals`` - each fiscal year's reported figure and when it was reported (:data:`~.fields.ACTUAL_MEASURES`).
-3. ``revisions`` - how many analysts raised and lowered their EPS estimate for FY1 and FY2, at each month end, for
-   that day's index members only. LSEG answers these one date at a time: asked as a history the request never
-   answers and lseg-data re-sends it, at a request each, until stopped.
+3. ``revisions`` - how many analysts raised and lowered their EPS estimate for FY1 and FY2, at the latest month end,
+   for that day's index members only. LSEG answers these one date at a time: asked as a history the request never
+   answers and lseg-data re-sends it, at a request each, until stopped. And whatever date is asked, the answer is
+   the count of the day it is asked (:data:`REVISION_LIVE_DAYS`), so no history can be had: only month ends at most
+   a month old are asked, and the counts build up one month at a time from the refresh.
 
 **Per-share figures in the shares of their own date.** LSEG restates per-share estimates for every later split (Apple's
 2015 consensus comes back divided by its 2020 split), so a figure fetched again after a split would change. Each is
@@ -35,6 +37,7 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
@@ -59,6 +62,10 @@ STEPS = ("consensus", "actuals", "revisions")
 BUCKETS = 20
 #: RICs per revisions call (one date): 1,000 cost 2 requests (checked 2026-10-30).
 REVISION_CHUNK = 1000
+#: How old a month end's revision counts may be asked. LSEG answers ``TR.NumEstRevisingUp`` / ``Down`` with the day's
+#: counts whatever ``SDate`` names (GE: 21 raised, 0 lowered in every June from 2000 to 2026; a departed company 0 and
+#: 0), so an older month end would store today's count under its date: it is not asked.
+REVISION_LIVE_DAYS = schema.REVISION_LIVE_DAYS
 CONSENSUS_KEY = ["listing_id", "vendor_id", "measure", "period", "as_of_date"]
 
 
@@ -70,6 +77,15 @@ def last_month_end(today: dt.date) -> dt.date:
 def month_ends(start: str, end: str) -> list[str]:
     """Calendar month ends from ``start`` to ``end`` (the days LSEG dates monthly consensus by)."""
     return [d.date().isoformat() for d in pd.date_range(start, end, freq="ME")]
+
+
+def revision_days(start: str, end: str, today: dt.date) -> list[str]:
+    """The month ends from ``start`` to ``end`` whose revision counts can still be had: a month old at most.
+
+    Older ones are not asked: LSEG would answer today's counts under their date (:data:`REVISION_LIVE_DAYS`).
+    """
+    oldest = pd.Timestamp(today) - np.timedelta64(REVISION_LIVE_DAYS, "D")
+    return [d for d in month_ends(start, end) if pd.Timestamp(d) >= oldest]
 
 
 def live_first(rows: pd.DataFrame, key: Sequence[str]) -> pd.DataFrame:
@@ -84,7 +100,10 @@ def live_first(rows: pd.DataFrame, key: Sequence[str]) -> pd.DataFrame:
 
 
 class EstimatesLoad(LsegLoad):
-    """The steps of the module docstring over one engine and client."""
+    """The steps of the module docstring over one engine and client; ``today`` decides which revision dates are live."""
+
+    #: the day the load runs (None: the real today), which decides the month ends whose revision counts are live
+    today: dt.date | None = None
 
     def splits(self) -> pd.DataFrame:
         """``[listing_id, ex_date, ratio]``: LSEG's splits - the ones its per-share estimates are restated for."""
@@ -167,15 +186,19 @@ class EstimatesLoad(LsegLoad):
         return out.assign(start_date=pd.to_datetime(out["start_date"]), end_date=pd.to_datetime(out["end_date"]))
 
     def revisions(self, since: dt.date | None = None, report: StepReport | None = None) -> StepReport:
-        """EPS revision counts at each month end, asked one date at a time for that day's members."""
+        """EPS revision counts at the month ends still live (:func:`revision_days`), a date at a time, members only."""
         report = report or StepReport()
+        start = (since or pd.Timestamp(self.start).date()).isoformat()
+        days = revision_days(start, self.end, self.today or dt.date.today())
+        if not days:
+            return report
         spells = self.members_on()
         ids = self.listing_ids()
         ric_of: dict[int, list[str]] = {}
         for ric, listing in ids.items():
             if not rics.is_index(ric):
                 ric_of.setdefault(listing, []).append(ric)
-        for day in month_ends((since or pd.Timestamp(self.start).date()).isoformat(), self.end):
+        for day in days:
             d = pd.Timestamp(day)
             inside = spells[(spells["start_date"] <= d) & (spells["end_date"].isna() | (spells["end_date"] > d))]
             members = sorted({r for listing in inside["listing_id"] for r in ric_of.get(int(listing), [])})
@@ -204,14 +227,18 @@ def load_estimates(
     steps: Sequence[str] = STEPS,
     client: LsegClient | None = None,
     market: str = "US",
+    today: dt.date | None = None,
 ) -> dict[str, Any]:
     """Run ``steps`` (see the module docstring); ``complete`` False when LSEG's limit or a runaway request stopped it.
 
     ``since`` turns the full load into a top-up: consensus and revisions from that day, actuals from a year before.
-    ``end`` defaults to :func:`last_month_end`. ``market``: whose listings (a ``load_lseg`` market code).
+    ``end`` defaults to :func:`last_month_end`. ``market``: whose listings (a ``load_lseg`` market code). ``today``
+    (default the real one) decides which month ends' revision counts are still live (:func:`revision_days`).
     """
-    end = end or last_month_end(dt.date.today()).isoformat()
+    today = today or dt.date.today()
+    end = end or last_month_end(today).isoformat()
     load = EstimatesLoad(engine, client or LsegClient(), start=start, end=end, market=MARKETS[market])
+    load.today = today
     report: dict[str, Any] = {"complete": False, "stopped": None, "market": market}
     with ops.job("load_estimates" if market == "US" else f"load_estimates_{market.lower()}", engine) as run:
         try:
@@ -263,7 +290,7 @@ def refresh_estimates(
     if newest is not None and newest >= end:
         return {"complete": True, "stopped": None, "up_to_date": f"consensus held to {newest}; next after {end:%B}"}
     since = None if newest is None else newest + dt.timedelta(days=1)
-    return load_estimates(engine, since=since, end=end.isoformat(), client=client, market=market)
+    return load_estimates(engine, since=since, end=end.isoformat(), client=client, market=market, today=today)
 
 
 PROBE_RICS = ["AAPL.OQ", "BRKb.N", "JPM.N", "TWTR.K^J22"]  # a share, a share class, a bank, a retired one

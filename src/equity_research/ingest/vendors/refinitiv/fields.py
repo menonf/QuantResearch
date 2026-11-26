@@ -195,7 +195,7 @@ def annual_fields(field: str) -> list[str]:
 ESTIMATE_STEMS = {"eps": "EPS", "revenue": "Revenue", "ebit": "EBIT", "dps": "DPS", "cfps": "CFPS", "roe": "ROE"}
 #: Measures quoted per share, which LSEG restates for later splits.
 PER_SHARE_MEASURES = frozenset({"eps", "dps", "cfps"})
-#: The forecast periods asked per measure: what Barings' GEMS factors read (FY3 for growth to the third year,
+#: The forecast periods asked per measure: what the GEMS factors read (FY3 for growth to the third year,
 #: FY1 and FY2 for the next twelve months).
 ESTIMATE_PERIODS = {
     "eps": ("FY1", "FY2", "FY3"),

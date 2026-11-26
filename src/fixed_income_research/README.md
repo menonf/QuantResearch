@@ -13,6 +13,8 @@ ingest/      ice (ICE's constituent files -> canonical rows), fred (official ind
 pipelines/   load_ice (a folder of files, new ones only), load_index_levels (FRED)
 quality/     the fixed income gates
 analytics/   replication (an index rebuilt from its members; what it is made of)
+strategies/  factors (value, momentum, size, low risk; their composite), factor_strategy (every fifth of every signal
+             backtested monthly against the index, each signal's best fifth registered)
 cli.py       the `fir` command: load-ice, load-index-levels, checks, sync-cache
 ```
 
@@ -34,9 +36,16 @@ skipped. Three facts about them shape the model (`ingest/ice.py` has the detail)
 The database engine and migrations, the raw zone (every file landed unchanged, every row naming its batch), job
 runs and the writer lock, change-only upserts, the security master (a bond is a `core.listing` of a `core.issuer`,
 with its ISIN and CUSIP in `core.identifier`), the quality-check framework, the research cache mechanism, the
-performance and tracking statistics (`periods_per_year=12` for monthly returns) and the charts.
+performance and tracking statistics (`periods_per_year=12` for monthly returns), the backtest engine and quantile
+books, the run registry (`finish_run`: runs filed under `fixed_income`, trials counted, the hold-out fenced) and the
+charts.
+
+## Notebooks
+
+`notebooks/fixed_income/`: 1.1 loads the files, 2.1 rebuilds the US High Yield index, 3.1 tests its credit factors
+(family `credit_factors`).
 
 ## Not built yet
 
-Strategies, the run registry for bonds, and risk beyond the provider's own durations. See the top-level README,
-*Adding an asset class*, and `docs/ARCHITECTURE.md`.
+Risk beyond the provider's own durations (a bond risk model). See the top-level README, *Adding an asset class*, and
+`docs/ARCHITECTURE.md`.

@@ -1,4 +1,4 @@
-"""Barings' GEMS estimate-based factors (I/B/E/S), rebuilt as coded on our point-in-time consensus history.
+"""The GEMS estimate-based factors (I/B/E/S), rebuilt as coded on our point-in-time consensus history.
 
     inputs = load_estimate_inputs(cache, dates, close, actions, value=..., shares=..., total_assets=...)
     panels = estimate_factors(inputs)                     # {factor: date x listing_id}
@@ -26,12 +26,17 @@ What is ours, not production's:
 * **Prices.** A per-share yield divides by the listing's close on the date; a total (revenue, EBIT) by the
   company's market value - production's ``currency_units`` scaling is not needed (LSEG answers in units).
 * **Not built**: ``sales_revisions_1_mth`` - only EPS revision counts are loaded.
+* **Revision counts are live only** (:func:`live_revisions`). LSEG answers ``TR.NumEstRevisingUp`` / ``Down`` with
+  the counts of the day it is asked, whatever date the request names: in the build of 2026-11-17, 99.6 % of the
+  stored counts from 2000 on equal each listing's latest (GE: 21 raised, 0 lowered every June from 2000 to 2026),
+  and a company since delisted answers 0 and 0. A count asked long after its date is therefore today's count under
+  an old date - look-ahead in a backtest - so research reads only counts asked within
+  :data:`REVISION_LIVE_DAYS` of their month end (the refresh asks each month end within days). Backtests before
+  the first live month have no breadth; a screen of today's companies has their real counts.
 * **Consensus revisions** (:func:`consensus_revision_factors`, not in the library): the revision of the consensus
-  itself, for backtests. LSEG serves past revision *counts* only for companies still listed - a company since
-  delisted or acquired answers 0 raised and 0 lowered (probed 2026-11-13) - so a backtest's breadth scores the
-  survivors alone. The consensus history covers the departed too; its month-on-month change, for the same fiscal
-  year, over the price, is the classic measure of earnings revisions (Chan, Jegadeesh and Lakonishok, 1996). It
-  stands in for breadth in a backtest only: a screen of today's companies, all listed, has their real counts.
+  itself. The consensus is a true history (LSEG keeps each month's mean, for departed companies too); its
+  month-on-month change, for the same fiscal year, over the price, is the classic measure of earnings revisions
+  (Chan, Jegadeesh and Lakonishok, 1996). It stands in for breadth in every backtest.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from equity_research.data import schema as _schema
 from equity_research.data.cache import ResearchCache
 from equity_research.data.panels import split_factor
 from equity_research.data.reads import id_list
@@ -51,6 +57,8 @@ PER_SHARE = frozenset({"eps", "dps", "cfps"})
 MONTHS_BEFORE = 6
 #: An actual without an announcement time is used this long after its fiscal year ended - late, never early.
 FALLBACK_REPORTING_DAYS = 90
+#: A revision count is that month end's only when it was asked within this many days of it (:func:`live_revisions`).
+REVISION_LIVE_DAYS = _schema.REVISION_LIVE_DAYS
 
 EPS_FACTORS = [
     "earnings_revisions_1_mth",
@@ -143,10 +151,12 @@ def load_estimate_inputs(
         f"FROM equity.estimate WHERE listing_id IN ({id_list(listings)}) AND as_of_date >= ?",
         [first],
     )
-    revisions = cache.query(
-        "SELECT listing_id, measure, period, as_of_date, up, down FROM equity.estimate_revision "
-        f"WHERE listing_id IN ({id_list(listings)}) AND as_of_date >= ?",
-        [first],
+    revisions = live_revisions(
+        cache.query(
+            "SELECT listing_id, measure, period, as_of_date, up, down, loaded_at FROM equity.estimate_revision "
+            f"WHERE listing_id IN ({id_list(listings)}) AND as_of_date >= ?",
+            [first],
+        )
     )
     actuals = cache.query(
         "SELECT listing_id, measure, period_end, value, announced_at FROM equity.estimate_actual "
@@ -164,6 +174,18 @@ def load_estimate_inputs(
         shares=shares,
         total_assets=total_assets,
     )
+
+
+def live_revisions(rows: pd.DataFrame, live_days: int = REVISION_LIVE_DAYS) -> pd.DataFrame:
+    """The revision counts asked from their month end to ``live_days`` after it; ``loaded_at`` dropped.
+
+    LSEG answers a revision count with the day's count whatever date is asked (see the module docstring), so a count
+    loaded years after its ``as_of_date`` is a snapshot of the day it was loaded, not of its date.
+    """
+    as_of = pd.to_datetime(rows["as_of_date"])
+    loaded = pd.to_datetime(rows["loaded_at"])
+    live = (loaded >= as_of) & (loaded <= as_of + np.timedelta64(live_days, "D"))
+    return rows.loc[live].drop(columns="loaded_at").reset_index(drop=True)
 
 
 def month_ends(dates: pd.DatetimeIndex, months_back: int = 0) -> pd.DatetimeIndex:
@@ -266,7 +288,10 @@ class Estimates:
             value=a["value"].astype(float),
         )
         known = a["announced_at"].fillna(a["period_end"] + pd.Timedelta(days=FALLBACK_REPORTING_DAYS))
-        a = a.assign(known=known.astype("datetime64[ns]")).sort_values("known")
+        # the as-of join takes the last row known before the date: years known at the same moment (LSEG back-filled
+        # some companies' early years with one announcement time) are put in fiscal order, so the latest year wins
+        # whatever order the cache returned the rows in
+        a = a.assign(known=known.astype("datetime64[ns]")).sort_values(["known", "period_end"], kind="mergesort")
         pairs = pd.MultiIndex.from_product([self.inputs.dates, self.inputs.listings], names=["date", "listing_id"])
         grid = pairs.to_frame(index=False).astype({"date": "datetime64[ns]"}).sort_values("date")
         hit = pd.merge_asof(grid, a, left_on="date", right_on="known", by="listing_id", allow_exact_matches=False)

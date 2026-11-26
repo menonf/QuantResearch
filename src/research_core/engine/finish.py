@@ -30,14 +30,16 @@ def finish_run(
     family: str,
     engine: Engine | None,
     holdout: bool,
+    periods_per_year: int = TRADING_DAYS,
 ) -> tuple[dict[str, Any], int | None]:
     """``(metrics, run_id)`` of a finished backtest, measured and - with an ``engine`` - registered.
 
     Its own measures, those against ``benchmark``, and with an ``engine`` the trial count, both deflated Sharpe ratios
     and the registered run (``run_id`` None without one). Every strategy, whatever builds its book, is measured and
-    registered the same way.
+    registered the same way. ``periods_per_year`` is how many of the backtest's periods make a year: an equity book
+    is backtested on daily closes, a bond index's on its month ends (12).
     """
-    metrics: dict[str, Any] = result.metrics()
+    metrics: dict[str, Any] = result.metrics(periods_per_year=periods_per_year)
     pair = monthly_pair(result.net, benchmark)
     active = pair["r"] - pair["b"]
     if not benchmark.empty:
@@ -46,7 +48,7 @@ def finish_run(
     if engine is not None:
         trials = trials_with(engine, family, config)
         metrics["trials"] = trials
-        metrics["deflated_sharpe"] = _deflated(result.net.dropna(), float(metrics["sharpe"]), trials, TRADING_DAYS)
+        metrics["deflated_sharpe"] = _deflated(result.net.dropna(), float(metrics["sharpe"]), trials, periods_per_year)
         if len(active) > 1:
             metrics["deflated_active_sharpe"] = _deflated(active, float(metrics["information_ratio"]), trials, MONTHS)
         run_id = record_run(engine, config, metrics, asset_class=asset_class, family=family, holdout_opened=holdout)

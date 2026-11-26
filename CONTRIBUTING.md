@@ -36,7 +36,8 @@ All four pass, the new behaviour has a test, and docstrings say *why* where the 
   conflicts), never reassigned. Merging two issuers or two listings (one share line under two RICs) is an explicit
   step (`research_core.data.identity.merge_issuers`, `merge_listings`).
 * **Writes go through `research_core.data.db.upsert`.** Change-only, idempotent: a re-run writes nothing new. Pipelines run inside
-  `research_core.data.ops.job(...)`, which takes the writer lock, and end with quality gates (`equity_research.quality.checks`).
+  `research_core.data.ops.job(...)`, which takes the writer lock, and end with their asset class's quality gates
+  (`equity_research.quality.checks`, `fixed_income_research.quality.checks`).
 
 ## Schema
 
@@ -45,8 +46,9 @@ database, then `uv run alembic check` must report no differences.
 
 ## Research
 
-* Read from the local cache (`uv run eqr sync-cache`), not from the shared database.
-* Run strategies through `equity_research.strategies.factor_strategy.run_strategy` with an engine: every run is registered, so the number of
-  variants tried - and the deflated Sharpe ratio - is known.
+* Read from the local cache (`uv run eqr sync-cache`; `uv run fir sync-cache` for bonds), not from the shared database.
+* Run strategies through their runner with an engine - `factor_strategy.run_strategy`, `garp.run_garp`,
+  `qgarp.run_qgarp`, fixed income's `factor_strategy.run_factors` - all ending in `research_core.engine.finish.finish_run`:
+  every run is registered, so the number of variants tried - and the deflated Sharpe ratio - is known.
 * Backtests end before the hold-out (`EQR_HOLDOUT_START`). Open it once, for a final strategy, and say so.
 * Notebooks only set parameters and display results; logic lives in the package with tests.

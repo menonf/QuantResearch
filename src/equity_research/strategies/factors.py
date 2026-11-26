@@ -236,8 +236,53 @@ def magic_formula(ratios: pd.DataFrame, members: pd.DataFrame | None = None) -> 
     return combine({"ey": cross_sectional_z(ey, members), "roc": cross_sectional_z(roc, members)})
 
 
-def combine(scores: Mapping[str, pd.DataFrame], weights: Mapping[str, float] | None = None) -> pd.DataFrame:
-    """Weighted mean of score panels, ignoring a missing score for a name (equal weights by default)."""
+def earnings_value(ratios: pd.DataFrame, members: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Mean z-score of the yields on what a business earns: EBIT/EV, earnings (1/PE) and free cash flow to EV.
+
+    :func:`value`'s book and sales yields are its two weakest parts (notebook 3.6's triage: earnings yields t ~3,
+    free-cash-flow and EBIT yields ~2.4, sales 0.7, book -0.2): a price against assets or revenue says little about
+    what a share earns. A yield over a negative enterprise value is missing, not negative (``ratios``).
+    """
+    parts = {
+        "ebit": _ratio(ratios, "EBIT/EV"),
+        "earnings": _positive_inverse(_ratio(ratios, "P/E")),
+        "free_cash_flow": _ratio(ratios, "FCF/EV"),
+    }
+    return combine({k: cross_sectional_z(v, members) for k, v in parts.items()})
+
+
+def within_groups(
+    score: pd.DataFrame, groups: pd.Series, members: pd.DataFrame | None = None, *, min_names: int = 5
+) -> pd.DataFrame:
+    """Per date, each name's ``score`` z-scored among the members of its own group (``groups``: name -> sector).
+
+    Ranked across the whole universe, a cheap sector fills a value book (37 % banks in 3.1's first version): ranked
+    within sectors, the cheapest bank and the cheapest software house both score high. A name without a group, or in
+    a group with fewer than ``min_names`` scored members on the date, is ranked across the universe instead.
+    """
+    whole = cross_sectional_z(score, members)
+    out = whole.copy()
+    g = groups.reindex(score.columns)
+    values = score.where(members) if members is not None else score
+    for name in g.dropna().unique():
+        cols = g.index[g == name]
+        inside = cross_sectional_z(values[cols])
+        enough = values[cols].notna().sum(axis=1) >= min_names
+        out.loc[enough, cols] = inside.loc[enough].to_numpy()
+    return out.where(values.notna())
+
+
+#: How :func:`combine` treats a name missing a score: ``skip`` it (the mean of the scores it has) or count it
+#: ``neutral`` (zero, the average) - so a name with two good scores of five is not ranked as if it had five.
+MISSING = ("skip", "neutral")
+
+
+def combine(
+    scores: Mapping[str, pd.DataFrame], weights: Mapping[str, float] | None = None, *, missing: str = "skip"
+) -> pd.DataFrame:
+    """Weighted mean of score panels (equal weights by default); a missing score skipped or counted as neutral."""
+    if missing not in MISSING:
+        raise ValueError(f"missing must be one of {MISSING}, not {missing!r}")
     names = list(scores)
     w = {k: (weights or {}).get(k, 1.0) for k in names}
     aligned = [scores[k] for k in names]
@@ -247,8 +292,10 @@ def combine(scores: Mapping[str, pd.DataFrame], weights: Mapping[str, float] | N
         index, columns = index.union(s.index), columns.union(s.columns)
     num = pd.DataFrame(0.0, index=index, columns=columns)
     den = pd.DataFrame(0.0, index=index, columns=columns)
+    seen = pd.DataFrame(False, index=index, columns=columns)
     for k in names:
         s = scores[k].reindex(index=index, columns=columns)
         num += s.fillna(0.0) * w[k]
-        den += s.notna() * w[k]
-    return num / den.where(den > 0)
+        den += (s.notna() if missing == "skip" else 1.0) * w[k]
+        seen |= s.notna()
+    return (num / den.where(den > 0)).where(seen)

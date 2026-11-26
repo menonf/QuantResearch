@@ -407,11 +407,18 @@ class FakeEstimates(FakeLseg):
         return super().get_data(universe, fields_, params)
 
 
+#: The day the estimates load is "run": the window's month ends are then recent enough for revision counts to be asked
+#: (asked later, LSEG would answer the day's counts under their dates: ``load_estimates.revision_days``).
+LIVE = dt.date(2024, 3, 1)
+
+
 def test_estimates_load_in_the_shares_of_their_date_and_resume(scratch: Engine) -> None:
-    stopped = load_estimates(scratch, start=START, end=END, client=cast(LsegClient, FakeEstimates(throttle_after=7)))
+    stopped = load_estimates(
+        scratch, start=START, end=END, client=cast(LsegClient, FakeEstimates(throttle_after=7)), today=LIVE
+    )
     assert not stopped["complete"] and "run the load again" in stopped["stopped"]
     client = FakeEstimates()
-    done = load_estimates(scratch, start=START, end=END, client=cast(LsegClient, client))
+    done = load_estimates(scratch, start=START, end=END, client=cast(LsegClient, client), today=LIVE)
     assert done["complete"], done
     assert done["consensus"]["reused"] >= 7  # what was answered before the stop is read back
     periods = sum(len(p) for p in f.ESTIMATE_PERIODS.values())
@@ -439,7 +446,7 @@ def test_estimates_load_in_the_shares_of_their_date_and_resume(scratch: Engine) 
         for table in ("estimate", "estimate_revision", "estimate_actual"):
             assert one(f"SELECT COUNT(*) FROM equity.{table} WHERE batch_id IS NULL") == 0
     repeat = FakeEstimates()
-    again = load_estimates(scratch, start=START, end=END, client=cast(LsegClient, repeat))
+    again = load_estimates(scratch, start=START, end=END, client=cast(LsegClient, repeat), today=LIVE)
     assert again["complete"] and repeat.requests == 0
     written = [again[step][rows] for step, rows in zip(STEPS_E, ("estimates", "actuals", "revisions"), strict=True)]
     assert all(w["inserted"] == 0 and w["updated"] == 0 for w in written)  # read back, and nothing changed

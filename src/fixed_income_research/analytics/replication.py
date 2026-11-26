@@ -3,6 +3,7 @@
     rebuilt = index_returns(data.weights, data.total_returns)       # per month: return, covered, leavers, bonds
     official = official_returns(data.official)                      # the provider's own, from its month-end levels
     tracking(rebuilt["return"], official, periods_per_year=12)      # research_core's tracking statistics
+    earned = with_leavers(data.weights, data.excess_returns)        # every bond held has a return: books can be run
 
 The index's return over month *t* is the sum, over the bonds it held, of the weight set at the rebalance of *t-1*
 times the bond's return over *t*. The files give every bond's weight, but a return only for the bonds still in the
@@ -50,6 +51,25 @@ def index_returns(weights: pd.DataFrame, returns: pd.DataFrame) -> pd.DataFrame:
             "bonds": (held > 0).sum(axis=1),
         }
     )
+
+
+def with_leavers(weights: pd.DataFrame, returns: pd.DataFrame) -> pd.DataFrame:
+    """``returns`` with a held bond's missing return (it left the index) replaced by the index's return that month.
+
+    The same neutral guess :func:`index_returns` makes, put into the bonds themselves, so any book held over a month
+    - the index at its own weights, a fifth of it chosen by a signal - is measured by one rule: the index's weights
+    held through ``returns`` earn exactly :func:`index_returns`. A month whose previous month end has no file is
+    missing for every bond: no book formed before the gap can be measured over it.
+    """
+    held = held_weights(weights).reindex(returns.index)
+    earned = returns.copy()
+    index_return = index_returns(weights, returns)["return"].reindex(returns.index)
+    gone = held.reindex(columns=returns.columns).gt(0) & earned.isna()
+    earned = earned.mask(gone, index_return, axis=0)
+    unmeasured = ~consecutive(pd.DatetimeIndex(returns.index)).reindex(returns.index, fill_value=False)
+    unmeasured.iloc[0] = False  # the first month end has nothing before it to be measured from, not a gap
+    earned.loc[unmeasured.to_numpy()] = float("nan")
+    return earned
 
 
 def official_returns(levels: pd.Series) -> pd.Series:

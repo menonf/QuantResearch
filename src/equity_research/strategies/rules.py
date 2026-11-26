@@ -7,7 +7,7 @@
 
 A **rule** says something about a **subject** - a factor ("earnings_yield"), a composite, or ``*`` for the strategy as
 a whole: its lower or upper limit, whether financials are left out of it, its weight, a threshold. A **rule set** is
-the named collection one strategy applies together (Barings' cleaning limits of November 2026 are ``gems-2026-11``).
+the named collection one strategy applies together (QGARP's cleaning limits of November 2026 are ``gems-2026-11``).
 
 Steps:
 
@@ -54,13 +54,12 @@ RULE_FILES: dict[str, RuleFile] = {
     for spec in (
         RuleFile(
             code="gems-2026-11",
-            strategy="barings_qgarp",
-            file="barings_qgarp_limits.csv",
-            description="Barings QGARP cleaning limits: a lower and an upper limit for each of 117 scores; a value "
+            strategy="qgarp",
+            file="qgarp_limits.csv",
+            description="QGARP cleaning limits: a lower and an upper limit for each of 117 scores; a value "
             "outside its limits is set missing before the factor is ranked",
-            source="Barings' limits of November 2026 "
-            "(github.com/menonf/PythonProjects FactorResearch/rule.csv @40ff28c)",
-            columns=("barings_metric_name", "rule_type", "rule_value"),
+            source="The limits of November 2026 (github.com/menonf/PythonProjects FactorResearch/rule.csv @40ff28c)",
+            columns=("metric_name", "rule_type", "rule_value"),
         ),
     )
 }

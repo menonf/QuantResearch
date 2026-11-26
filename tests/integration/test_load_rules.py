@@ -12,7 +12,7 @@ from conftest import scratch_database
 from equity_research.data import artifacts as store
 from equity_research.data.cache import ResearchCache
 from equity_research.pipelines import load_rules as pipe
-from equity_research.strategies import barings_garp as bg
+from equity_research.strategies import qgarp as qg
 from equity_research.strategies import rules as ru
 
 pytestmark = pytest.mark.integration
@@ -31,7 +31,7 @@ def test_rule_sets_are_loaded_once_and_never_changed(tmp_path: Path, monkeypatch
         assert (_count(engine, "rule_set"), _count(engine, "strategy_rule")) == (1, 234)
         with engine.connect() as conn:
             held = conn.execute(sa.text("SELECT strategy, checksum FROM research.rule_set")).one()
-        assert held[0] == "barings_qgarp" and held[1] == ru.checksum(ru.read_rules(ru.RULE_FILES[CODE]))
+        assert held[0] == "qgarp" and held[1] == ru.checksum(ru.read_rules(ru.RULE_FILES[CODE]))
 
         assert pipe.load_rules(engine) == {CODE: "unchanged"}  # a second run writes nothing
         assert (_count(engine, "rule_set"), _count(engine, "strategy_rule")) == (1, 234)
@@ -69,9 +69,9 @@ def test_research_reads_the_rules_through_the_cache(tmp_path: Path) -> None:
 
         from_file = ru.read_rules(ru.RULE_FILES[CODE])
         pd.testing.assert_frame_equal(ru.cached_rules(cache, CODE), from_file, check_dtype=False)
-        shared, packaged = bg.shared_rules(cache, CODE), bg.packaged_rules(CODE)
+        shared, packaged = qg.shared_rules(cache, CODE), qg.packaged_rules(CODE)
         assert shared is not None and packaged is not None
         pd.testing.assert_frame_equal(shared, packaged, check_dtype=False)
-        assert bg.shared_rules(cache, None) is None
+        assert qg.shared_rules(cache, None) is None
         listed = ru.rule_sets(cache).set_index("code")
-        assert listed.loc[CODE, "rules"] == 234 and listed.loc[CODE, "strategy"] == "barings_qgarp"
+        assert listed.loc[CODE, "rules"] == 234 and listed.loc[CODE, "strategy"] == "qgarp"

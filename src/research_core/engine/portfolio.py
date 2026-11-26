@@ -48,6 +48,25 @@ def quantile_book(
     return pd.DataFrame(rows).T.reindex(columns=score.columns).fillna(0.0)
 
 
+def quantile_books(score: pd.DataFrame, dates: pd.DatetimeIndex, *, quantiles: int = 5) -> dict[int, pd.DataFrame]:
+    """``{quantile: book}``: each quantile's names of ``score`` on ``dates``, equally weighted (each row sums to 1).
+
+    Quantile 1 holds the lowest scores and ``quantiles`` the highest, cut as
+    :func:`~research_core.analytics.signals.evaluation.quantile_returns` cuts them (the rank percentile, rounded up),
+    so a book holds the names whose outcomes that function averages. Every quantile of a score is a book: whether a
+    signal sorts its universe shows in the whole fan, not in the best slice alone. A date on which fewer than
+    ``quantiles`` names have a score gets no row, so a backtest holds the previous book on through it.
+    """
+    on = score.reindex(pd.DatetimeIndex([d for d in dates if d in score.index]))
+    on = on[on.notna().sum(axis=1) >= quantiles]
+    bucket = np.ceil(on.rank(axis=1, pct=True) * quantiles).clip(1, quantiles)
+    books = {}
+    for q in range(1, quantiles + 1):
+        inside = (bucket == q).astype(float)
+        books[q] = inside.div(inside.sum(axis=1), axis=0).fillna(0.0)
+    return books
+
+
 def weighted_by(book: pd.DataFrame, size: pd.DataFrame) -> pd.DataFrame:
     """Each leg's names re-weighted in proportion to ``size`` (market value), each leg keeping its total.
 
@@ -63,6 +82,40 @@ def weighted_by(book: pd.DataFrame, size: pd.DataFrame) -> pd.DataFrame:
         leg = leg.T.fillna(leg.median(axis=1)).T.fillna(1.0).where(side)
         total = book.where(side).sum(axis=1)
         out += leg.div(leg.sum(axis=1), axis=0).mul(total, axis=0).fillna(0.0)
+    return out
+
+
+def capped(book: pd.DataFrame, cap: float) -> pd.DataFrame:
+    """Each leg's weights held to at most ``cap`` of the book each, the excess shared among the leg's other names.
+
+    A book weighted by market value scales up its largest holdings (the top 30 % of a universe holds the largest
+    companies at three times their index weight), and one bad share count can hand a name a third of the book: a cap
+    bounds what any single name can do. The excess goes to the uncapped names in proportion to their weights, again
+    until none is over the cap; a leg too small to hold its total under the cap (fewer than ``total / cap`` names)
+    ends equally weighted.
+    """
+    out = book.copy()
+    for d in out.index:
+        w = out.loc[d].to_numpy(dtype=float)
+        for side in (w > 0, w < 0):
+            leg = np.abs(w[side])
+            total = leg.sum()
+            if total == 0:
+                continue
+            limit = cap
+            if len(leg) * limit < total:  # cannot fit: equal weights are as flat as it gets
+                leg = np.full(len(leg), total / len(leg))
+            else:
+                for _ in range(len(leg)):
+                    over = leg > limit + 1e-15
+                    if not over.any():
+                        break
+                    excess = float((leg[over] - limit).sum())
+                    leg[over] = limit
+                    room = ~over & (leg < limit)
+                    leg[room] += excess * leg[room] / leg[room].sum()
+            w[side] = np.sign(w[side]) * leg
+        out.loc[d] = w
     return out
 
 

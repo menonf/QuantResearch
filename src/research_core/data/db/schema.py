@@ -219,7 +219,7 @@ research_run = sa.Table(
     schema="research",
 )
 
-#: The kinds of rule a set may hold: a factor's cleaning limits and exclusions (Barings' QGARP limits), a weight
+#: The kinds of rule a set may hold: a factor's cleaning limits and exclusions (QGARP's limits), a weight
 #: in a composite, a selection threshold. A new kind is a new migration.
 RULE_TYPES = ("lower_limit", "upper_limit", "exclude_financials", "invert", "weight", "threshold", "setting")
 
@@ -231,7 +231,7 @@ rule_set = sa.Table(
     sa.Column("rule_set_id", sa.Integer, sa.Identity(), primary_key=True),
     sa.Column("code", sa.String(64), nullable=False, unique=True),  # what a run's settings name: "gems-2026-11"
     asset_class_column(),
-    sa.Column("strategy", sa.String(64), nullable=False),  # the family of runs it belongs to: "barings_qgarp"
+    sa.Column("strategy", sa.String(64), nullable=False),  # the family of runs it belongs to: "qgarp"
     sa.Column("description", sa.Unicode(400), nullable=False),
     sa.Column("source", sa.Unicode(400), nullable=False),  # where the rules came from
     sa.Column("checksum", sa.CHAR(64), nullable=False),  # sha256 of its rules: a set is loaded once, unchanged

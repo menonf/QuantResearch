@@ -171,3 +171,59 @@ def distress_last(score: pd.DataFrame, ratios: pd.DataFrame) -> pd.DataFrame:
     """
     z = altman_z(ratios).unstack("listing_id").reindex(index=score.index, columns=score.columns)  # noqa: PD010
     return score.where(~(z <= DISTRESS_Z) | score.isna(), -np.inf)
+
+
+#: Seeds of the steadier model (:func:`steady_model`): each fit sees a different random subset of the ratios.
+STEADY_SEEDS = (11, 23, 37, 53, 71)
+
+
+def steady_model() -> Any:
+    """Shallow, regularised trees, five fits averaged: a model that small changes to its inputs do not upend.
+
+    The book's depth-10 trees on raw returns moved 3.3's results by two points a year between reruns of nearly the
+    same data. Here each fit has depth 3, at least 200 company-dates a leaf, an L2 penalty, a slower learning rate,
+    and 80 % of the ratios at each split; five seeds are averaged. The target it is meant for is a rank
+    (:func:`rank_target`), so outliers do not steer it.
+    """
+    from sklearn.ensemble import HistGradientBoostingRegressor, VotingRegressor  # noqa: PLC0415 - learning only
+
+    fits = [
+        (
+            f"seed{seed}",
+            HistGradientBoostingRegressor(
+                max_iter=200,
+                max_depth=3,
+                min_samples_leaf=200,
+                l2_regularization=1.0,
+                learning_rate=0.05,
+                max_features=0.8,
+                random_state=seed,
+            ),
+        )
+        for seed in STEADY_SEEDS
+    ]
+    return VotingRegressor(fits)
+
+
+def rank_target(returns: pd.DataFrame, members: pd.DataFrame, dates: pd.DatetimeIndex) -> pd.DataFrame:
+    """``date x listing_id``: each member's year-ahead return as a percentile among that date's members (0 to 1).
+
+    What a book chosen by rank needs is the order of next year's returns, not their size: a raw-return target is led
+    by a few shares that tripled or went bust, and by the market's year (every share's return moves with it).
+    """
+    ahead = forward_returns(returns, dates)
+    inside = ahead.where(members.reindex(index=dates, columns=ahead.columns).fillna(False).astype(bool))
+    return inside.rank(axis=1, pct=True)
+
+
+def learned_value_rank(
+    ratios: pd.DataFrame,
+    returns: pd.DataFrame,
+    members: pd.DataFrame,
+    dates: pd.DatetimeIndex,
+    model: Callable[[], Any] = steady_model,
+) -> pd.DataFrame:
+    """:func:`learned_value` made steadier: the same features and walk-forward, a rank target, :func:`steady_model`."""
+    features = book_features(ratios)
+    predicted = walk_forward(features, rank_target(returns, members, dates), members, dates, model)
+    return distress_last(predicted, ratios)

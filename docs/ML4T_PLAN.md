@@ -24,9 +24,10 @@ latent factors -> causal -> model analysis -> backtest -> portfolio -> risk -> c
 
 ## Our data, as it bears on the plan
 
-* Prices: LSEG from 2003-11, daily OHLCV, unadjusted with corporate actions; total-return and split-adjusted panels in
-  `panels.py`. Membership: S&P 1500 from 2005-01 (the study starts there).
-* Accounts: SEC (XBRL from 2009-2011) and LSEG (from 2004-09), point in time by `published_at`.
+* Prices: LSEG from 1998-11 (2003-11 before the rebuild of 2026-11-17), daily, unadjusted with corporate actions;
+  total-return and split-adjusted panels in `panels.py`. Membership: the S&P 500 from 2000, the S&P 400 and 600 from
+  2001; the study starts in 2005.
+* Accounts: SEC (XBRL from 2009-2011) and LSEG (published from 1999), point in time by `published_at`.
 * Walk-forward: 10 years' training then one year's validation gives 10 folds, validating 2015-2024. A shorter or
   expanding training window gives more; the choice is a registered config, not a tweak.
 * Hold-out: 2025-01-01 onward (22 months by now) - the book's "evidence boundary". Only the final step opens it.
@@ -62,7 +63,7 @@ latent factors -> causal -> model analysis -> backtest -> portfolio -> risk -> c
 | 22-23 RAG, knowledge graphs | later (P9) | on SEC filings; an LLM's cost and keys are a decision |
 | 24 Autonomous agents | **out** | not a data-research method |
 | 25 Live trading | **out** | this repository is research only; no broker layer |
-| 26 MLOps | partly (P4) | drift monitoring of a live signal; feature stores and MLflow are what `store.py` and the registry already are |
+| 26 MLOps | partly (P4) | drift monitoring of a live signal; feature stores and MLflow are what the artifact store and the registry already are |
 | 27 Systematic edge | read | conclusions |
 
 The other seven case studies (ETFs, FX, futures, crypto perpetuals, NASDAQ-100 intraday, two on options) need data we
@@ -70,11 +71,13 @@ do not hold yet; where it can be had free or from LSEG they are scoped in "Other
 
 ## Design within the existing architecture
 
-* **No new architecture for P0-P7.** Pure functions in `research/`, a notebook per phase (in
-  `notebooks/equity/5_machine_learning/`, numbered 5.1 on) that only sets parameters and shows results, unit tests on
-  synthetic panels with known answers.
-* **Artifact store** (`research/store.py`): labels, features and predictions as Parquet under
-  `data/<db name>/research/<kind>/<name>-<hash>.parquet`, each with a sidecar recording its config, the data snapshot
+* **No new architecture for P0-P7.** Pure functions in `equity_research/ml/` (what any asset class can use in
+  `research_core`: labels, evaluation and validation in `analytics/signals/`, allocation in `engine/`), a notebook per
+  phase (in `notebooks/equity/5_machine_learning/`, numbered 5.1 on) that only sets parameters and shows results, unit
+  tests on synthetic panels with known answers.
+* **Artifact store** (`research_core/data/artifact_store.py`, bound to the returns method in
+  `equity_research/data/artifacts.py`): labels, features and predictions as Parquet under
+  `data/<db name>/research/<asset class>/<kind>/<name>-<hash>.parquet`, each with a sidecar recording its config, the data snapshot
   (max `loaded_at`) and the code version - computed once per data version, like the book's `labels/*.parquet` plus
   `.digest`. `data/` is not in git.
 * **Training runs are registered runs.** A fitted model configuration is a row in `research.run` (no schema change):
@@ -84,29 +87,32 @@ do not hold yet; where it can be had free or from LSEG they are scoped in "Other
 * **New data (P8-P9) follows "Choosing vendors, adding one"** in `ARCHITECTURE.md`: a client, the raw zone, batches,
   canonical tables by Alembic migration, gates and audit rules.
 * **Dependencies** in optional groups, added in the phase that first needs them:
-  `ml` = lightgbm, statsmodels, optuna (P1-P3); `deep` = torch (P5-P6). Checked 2026-10-30: adding both leaves
+  `ml` = lightgbm, optuna (P3; statsmodels and arch are base dependencies); `deep` = torch (P5-P6); `text` =
+  transformers (P9's FinBERT). Checked 2026-10-30: adding both leaves
   numpy 2.5.4, pandas 2.3.3, scikit-learn 1.9.1, scipy 1.18.1, duckdb 2.0.0 and pyarrow 26.0.0 where they are, and
   every one has a Windows wheel for Python 3.14 (lightgbm 4.7.0, statsmodels 0.15.0, optuna 5.0.0, torch 2.15.0).
   The book's `ml4t-*` libraries are not dependencies; their results may be used in a test as a cross-check.
 
 ## Compatibility rules (so nothing existing breaks)
 
-1. **Existing functions keep their signatures and defaults.** What notebooks 2.1, 3.1-3.5 and 4.1-4.3 import stays
-   as it is: `data.load_universe_data`, `strategy.StrategyConfig` / `run_strategy` / `factor_scores` / `TRAIN_FROM`,
-   `backtest.performance` / `active_performance` / `decile_returns`, `registry.deflated_sharpe` /
-   `HoldoutClosedError`, `indices.*`, `classification.listing_sectors`, `screen.*`, `runs`, `garp.*`, `dashboard`,
-   `ml`, `factors`, `risk_model`, `portfolio_risk`, `risk_data`, `risk_styles`. New behaviour is a new function or a new
-   keyword whose default is today's behaviour.
+1. **Existing functions keep their signatures and defaults.** What the notebooks of sections 2-4 import stays as it
+   is: `universe.load_universe_data`, `factor_strategy.StrategyConfig` / `run_strategy` / `factor_scores` /
+   `TRAIN_FROM`, `metrics.performance` / `active_performance` / `decile_returns`, `registry.deflated_sharpe` /
+   `HoldoutClosedError`, `indices.*`, `sectors.listing_sectors`, `screen.*`, `runs`, `garp.*`, `qgarp.*`,
+   `dashboard`, `learned_value`, `factors`, `risk_model`, `portfolio_risk`, `risk_data`, `risk_styles`. New behaviour
+   is a new function or a new keyword whose default is today's behaviour.
 2. **New registry families only.** Never reuse an existing family name, so existing trial counts and deflated Sharpes
    do not move.
 3. **A new table is migrated in every local database before it joins the cache.** `ResearchCache.sync` and
    `copy-database` walk every table in the schema; a database without the table would fail. Verify the migration on
-   a local database first (the integration tests' scratch databases, `equity_research_gate`), then migrate Azure
-   (the working database since 2026-10-30) with confirmation, in the same change.
+   a local database first (the integration tests' scratch databases, `quant_research_gate`), then migrate the working
+   database (`quant_research_local`) in the same change, and Azure only with confirmation.
 4. **Lock changes are read before they are kept.** A dependency group that moves numpy, pandas, scikit-learn, scipy,
-   duckdb or pyarrow is a decision, not a side effect (`ml.py`'s model and every notebook number depend on them).
-5. **A regression check after each phase.** Before P0, record the key results of notebooks 3.1-3.5 and 4.1-4.3 (registered run
-   metrics, the risk model's summary numbers); after each phase, rerun them on the same data snapshot and compare.
+   duckdb or pyarrow is a decision, not a side effect (`learned_value.py`'s model and every notebook number depend on
+   them).
+5. **A regression check after each phase.** Before P0, record the key results of the strategy and analytics notebooks
+   (registered run metrics, the risk model's summary numbers: today 3.1-3.7, 4.1 and 4.2, `regression.FAMILIES`);
+   after each phase, rerun them on the same data snapshot and compare.
 6. **Optional dependencies stay optional.** Modules needing torch import it lazily; their tests skip without it, so
    the base gate runs without the `deep` group.
 7. **The hold-out stays shut** until a phase's final step, once per final strategy, recorded by the registry.
@@ -119,7 +125,8 @@ do not hold yet; where it can be had free or from LSEG they are scoped in "Other
 
 Each phase is done when the gate passes (`ruff format`, `ruff check`, `mypy`, unit tests; integration tests when the
 database is touched), `ARCHITECTURE.md` lists the new modules and notebook, the notebook runs from start to finish on
-the working database (Azure `equity_research`), and the regression check (rule 5) shows no change.
+the working database (`quant_research_local`; Azure `equity_research` until 2026-11-13), and the regression check
+(rule 5) shows no change.
 
 ### P0 - Groundwork: protocol, labels, folds, evaluation (chapters 6, 7)
 
@@ -128,10 +135,10 @@ Book: `06_strategy_definition/02_cv_foundations`, `07_defining_the_learning_task
 
 - [x] Baseline for the regression check (rule 5); a git commit so runs record a code version (today every run's
       `code_version` is empty - the repository has no commits)
-- [x] `research/store.py` - the artifact store
-- [x] `research/labels.py` - forward returns (1, 5, 21 days; 1 month), triple-barrier, trend-scanning
-- [x] `research/validation.py` - walk-forward folds with purging (label horizon) and an embargo; nested CV for tuning
-- [x] `research/evaluation.py` - IC series (rank and Pearson), Newey-West t-statistics, IC decay by horizon, quantile
+- [x] `research_core/data/artifact_store.py` - the artifact store
+- [x] `research_core/analytics/signals/labels.py` - forward returns (1, 5, 21 days; 1 month), triple-barrier, trend-scanning
+- [x] `research_core/analytics/signals/validation.py` - walk-forward folds with purging (label horizon) and an embargo; nested CV for tuning
+- [x] `research_core/analytics/signals/evaluation.py` - IC series (rank and Pearson), Newey-West t-statistics, IC decay by horizon, quantile
       spreads, turnover and rank autocorrelation, Benjamini-Hochberg false-discovery control, a triage ledger
 - [x] registry helper: register each point of a search as a trial (`registry.record_search`)
 - [x] Notebook 5.1 *ML research protocol*: feasibility (breadth by date, move against cost, the folds)
@@ -141,10 +148,10 @@ Book: `06_strategy_definition/02_cv_foundations`, `07_defining_the_learning_task
 Book: `08_financial_features/01-07`, `09_model_based_features/02-14`; case studies `03_financial_features`,
 `04_model_based_features`.
 
-- [x] `research/features.py` - price-volume families (momentum, reversal, volatility, liquidity: Amihud, Corwin-Schultz
+- [x] `equity_research/ml/features.py` - price-volume families (momentum, reversal, volatility, liquidity: Amihud, Corwin-Schultz
       and Roll spreads from daily bars), the fundamentals from `ratios.py` / `factors.py`, calendar. Corwin-Schultz
       is not possible: our LSEG bars carry close and volume only (no high, low or open); Roll's spread needs closes
-- [x] `research/model_features.py` - GARCH(1,1), HAR volatility, fractional differencing, Kalman trend, HMM regimes,
+- [x] `equity_research/ml/model_features.py` - GARCH(1,1), HAR volatility, fractional differencing, Kalman trend, HMM regimes,
       structural breaks. No `ml` group needed: `arch` and `statsmodels` are base dependencies already
 - [x] Notebook 5.2 *features*: every feature through `evaluation.py`; the triage ledger; overlap with existing factors
       and the risk model's styles
@@ -163,7 +170,7 @@ Book: `12_gradient_boosting/02, 04, 07, 08, 11`; case studies `07_gbm` / `06_gbm
 
 - [x] LightGBM per fold; a grid over leaf profiles and losses, then Optuna (every trial registered)
 - [x] TreeSHAP through LightGBM's `pred_contrib`; conformal intervals
-- [x] Notebook 5.4 *gradient boosting*, against P2 and `ml.py`'s learned value
+- [x] Notebook 5.4 *gradient boosting*, against P2 and `learned_value.py`'s learned value
 
 ### P4 - From predictions to a strategy (chapters 16-20, 26)
 
@@ -256,7 +263,8 @@ is from what the platform offers and is confirmed by the probe below before any 
 ETFs (A1) fit what exists: `etf` is already an instrument type and their prices are daily bars. The rest need, each
 by migration with gates and audit rules, migrated in every local database (rule 3):
 
-- [ ] instrument types `fx`, `future`, `perp`, `option` (listings without an issuer, as index levels are today)
+- [ ] instrument types `future`, `perp`, `option` (listings without an issuer, as index levels are today; `fx` exists
+      since migration 0001 - the equity research's exchange rates)
 - [ ] `<asset class>.contract` (each in the schema of the package that loads it, docs/ARCHITECTURE.md section 3) -
       a future's root, expiry, multiplier and sector; an option's underlying, expiry, strike and right
 - [ ] `<asset class>.intraday_bar` - timestamped bars (UTC start, interval) with bid/ask where the source gives them: crypto's
@@ -332,10 +340,10 @@ by migration with gates and audit rules, migrated in every local database (rule 
 
 ## Open decisions
 
-1. A baseline git commit before P0 (so every run records the code that produced it).
-2. Dependency groups `ml` and `deep`.
-3. Whether P8 and P9 are wanted (new tables, vendors, disk: EDGAR text runs to tens of GB).
-4. Whether P10 is in scope.
+1. ~~A baseline git commit before P0~~ - taken 2026-11-07 (`4e16099`).
+2. ~~Dependency groups `ml` and `deep`~~ - added 2026-11-08.
+3. Whether P8 is wanted (new tables and vendors). P9 was chosen on 2026-11-08 (10-K text only, no RAG).
+4. ~~Whether P10 is in scope~~ - synthetic data chosen 2026-11-08, minute bars not.
 5. Which of A1-A7 to build, and in what order (suggested: A1, A2, A3, A4, then A5 after the probe; A6 and A7 last).
 6. Free accounts: a FRED API key (A2, P8), an Alpaca account (A6) - both keys go in the keyring.
 7. Running the LSEG probe (start Workspace; ~20 requests of the 10,000 a day).
@@ -351,7 +359,7 @@ by migration with gates and audit rules, migrated in every local database (rule 
   local one and synced. Phases run on `equity_research` from here; the regression baseline (rule 5) is taken there.
 * 2026-11-06 - notebooks grouped into folders (`1_data_load`, `2_index_replication`, `3_investment_strategies`,
   `4_portfolio_analytics`) and numbered folder.position; this plan's notebooks become 5.1-5.9 in
-  `5_machine_learning/` (they were 12-20, which clashed with the Barings GARP and FTSE notebooks).
+  `5_machine_learning/` (they were 12-20, which clashed with the QGARP and FTSE notebooks).
 * 2026-11-07 - notebook 5.1 `5_analysis/01_choosing_ml_algorithm` and `research/model_choice.py`: the book's
   eight learners (*Build Your Own AI Investor*) compared by out-of-sample rank IC and chosen walk-forward, registry
   family `ml_model_choice_lo`. Its IC and Newey-West t-statistic are the first pieces of P0's `evaluation.py`.
@@ -510,3 +518,24 @@ by migration with gates and audit rules, migrated in every local database (rule 
   5.10: eleven text discoveries (restatements dropped); acquisition-or-disposal count still the only survivor
   (t -3.50). 3.3: the learned score now trails SPTM (-0.5 % a year; it led by 0.4 % on 14 November). Each
   notebook's findings were rewritten to its new outputs.
+* 2026-11-20 - a review of the strategy notebooks 3.1-3.6, implemented on branch `strategy_improvements`
+  (`docs/STRATEGY_REVIEW.md`). Two data errors fixed outright: LSEG's revision counts are a snapshot whatever
+  `SDate` asks (99.6 % equal each listing's latest), so research reads only counts loaded within 31 days of their
+  date and the loader asks no older month end; EBIT / EV is missing where EV <= 0. Everything else is a new setting
+  whose default is the old behaviour and which is registered only when set (compatibility rule 1: old hashes kept):
+  `mix`, `within_sectors`, `construction="tilted"` (`research_core/engine/tilt.py`: benchmark plus Grinold-Kahn
+  tilts on 4.2's risk model, beta-, sector- and size-neutral), `max_weight`, `benchmark` (own cap-weighted index),
+  `drift_band`, `cost_multiplier`, `train_from`; factors `earnings_value`, `consensus_revisions` (4 months),
+  `ml_value_rank`. Notebooks 3.1-3.6 rerun; 3.7 (family `revised_lo`) specified and run once: **does not pass**
+  (S&P 1500 +0.41 % a year against its own index, t 0.73, negative at twice the costs; FTSE All-Share unchanged
+  +0.99 %, t 2.24). 3.4's rebuilt long-short book (`revised_ls`) does not pass (Sharpe 0.27 against 0.35). Without
+  the counts' look-ahead QGARP returns 0.6 points a year less on both universes. The regression check now covers
+  `revised_lo` and `revised_ls`; its baseline is to be retaken once the branch is accepted. A third data fix
+  came from rerunning 3.6: the same configuration gave slightly different results (up to 0.007 points a year)
+  because LSEG back-filled some early actuals with one announcement time and `Estimates.actual` took whichever year
+  the cache returned last; the latest year now wins (stable sort, tested), and 3.5 and 3.6 were run again.
+* 2026-11-24 - QGARP's registry family renamed `qgarp` (modules `strategies/qgarp.py`, `qgarp_estimates.py`; rule
+  set `gems-2026-11` filed under it). Its 46 runs in `quant_research_local` were moved with their config hashes
+  recomputed: the same 14 configurations, so its trial count and deflated ratios are unchanged (rule 2 is about
+  reusing a name, which this is not). The regression baseline is keyed by the family list, so it is to be retaken -
+  as it already was for `revised_lo` and `revised_ls`.

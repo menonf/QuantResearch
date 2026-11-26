@@ -18,8 +18,9 @@ each date; only members with both count.
 3. **Decay** - the IC of the same score against labels of growing length: how long its information lasts.
 4. **Quantiles** - per date, the mean outcome of each fifth (or tenth) of members by score; the top-minus-bottom
    spread is what a long-short book would earn before costs, the top's excess what a long-only one could.
-5. **Turnover** - the share of the top quantile replaced from one date to the next, and the rank autocorrelation of
-   the score: a signal that reshuffles every day costs more to trade than it may earn.
+5. **Turnover** - the share of the top quantile replaced from one date to the next, the rank autocorrelation of the
+   score, and where each quantile's members are a date later (:func:`quantile_transitions`): a signal that reshuffles
+   every day costs more to trade than it may earn.
 6. **Many signals at once** - testing many signals finds some by luck. :func:`benjamini_hochberg` keeps the expected
    share of false discoveries among those kept at or below ``q`` (Benjamini and Hochberg, 1995); :func:`triage`
    lists every signal with its IC, t-statistic, p-value, verdict and trading measures - the ledger the book keeps.
@@ -156,6 +157,27 @@ def top_turnover(score: pd.DataFrame, members: pd.DataFrame | None = None, *, to
         now = held[i].sum()
         out[i] = (held[i] & ~held[i - 1]).sum() / now if now else np.nan
     return pd.Series(out, index=score.index, name="turnover")
+
+
+def quantile_transitions(
+    score: pd.DataFrame, members: pd.DataFrame | None = None, *, quantiles: int = 5, horizon: int = 1
+) -> pd.DataFrame:
+    """``from x to``: of the members in each quantile on a date, the share in each quantile ``horizon`` dates on.
+
+    Rows sum to 1, over the members scored on both dates (one that left in between counts in neither). A heavy
+    diagonal is a persistent score - its books change little from one rebalance to the next, so they cost little to
+    hold; a flat table is a score that reshuffles every date. Quantile 1 holds the lowest scores, as in
+    :func:`quantile_returns`.
+    """
+    s = score if members is None else score.where(members.reindex_like(score).fillna(False).astype(bool))
+    bucket = np.ceil(s.rank(axis=1, pct=True) * quantiles).clip(1, quantiles)
+    cells = np.asarray(bucket, dtype=float)
+    now, later = cells[:-horizon], cells[horizon:]
+    both = ~np.isnan(now) & ~np.isnan(later)
+    table = pd.crosstab(now[both].astype(int), later[both].astype(int), normalize="index")
+    levels = range(1, quantiles + 1)
+    table = table.reindex(index=levels, columns=levels, fill_value=0.0)
+    return table.rename_axis(index="from", columns=f"to (+{horizon})")
 
 
 def rank_autocorrelation(score: pd.DataFrame, members: pd.DataFrame | None = None, *, lag: int = 1) -> pd.Series:

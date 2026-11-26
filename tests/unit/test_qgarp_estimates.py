@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from equity_research.strategies import barings_estimates as be
+from equity_research.strategies import qgarp_estimates as qe
 
 DAY = pd.Timestamp("2015-06-30")
 DATES = pd.DatetimeIndex([DAY])
@@ -27,11 +27,11 @@ def _inputs(
     consensus: pd.DataFrame,
     revisions: pd.DataFrame | None = None,
     actuals: pd.DataFrame | None = None,
-) -> be.EstimateInputs:
+) -> qe.EstimateInputs:
     days = pd.bdate_range("2014-12-01", "2015-07-31")
     basis = pd.DataFrame({1: np.where(days < SPLIT, 2.0, 1.0), 2: 1.0}, index=days)  # splits after each day
     panel = pd.DataFrame({1: [50.0], 2: [20.0]}, index=DATES)
-    return be.EstimateInputs(
+    return qe.EstimateInputs(
         dates=DATES,
         consensus=consensus,
         revisions=revisions
@@ -53,7 +53,7 @@ def test_next_twelve_months_weighs_fy1_and_fy2_by_the_year_after_the_date() -> N
         (2, "eps", "FY1", "2015-06-30", "2015-12-31", 2.0, 0.1, 5),
         (2, "eps", "FY2", "2015-06-30", "2016-12-31", 3.0, 0.1, 5),
     ]
-    ntm = be.Estimates(_inputs(_consensus(rows))).ntm("eps").loc[DAY, 2]
+    ntm = qe.Estimates(_inputs(_consensus(rows))).ntm("eps").loc[DAY, 2]
     # a year on is 2016-06-30: 184 of FY2's 366 days still to come in FY1's place, 182 into FY2
     assert ntm == pytest.approx(184 / 366 * 2.0 + 182 / 366 * 3.0)
 
@@ -64,7 +64,7 @@ def test_a_snapshot_before_a_split_is_put_into_the_shares_of_the_date() -> None:
         (1, "eps", "FY1", "2015-06-30", "2015-12-31", 2.0, 0.1, 5),
         (1, "revenue", "FY1", "2015-05-31", "2015-12-31", 100.0, 1.0, 5),
     ]
-    e = be.Estimates(_inputs(_consensus(rows)))
+    e = qe.Estimates(_inputs(_consensus(rows)))
     assert e.get("eps", "FY1", "mean", 1).loc[DAY, 1] == pytest.approx(2.0)  # 4.0 then is 2.0 in June's shares
     assert e.get("eps", "FY1", "mean").loc[DAY, 1] == pytest.approx(2.0)
     assert e.get("revenue", "FY1", "mean", 1).loc[DAY, 1] == 100.0  # a total is not per share
@@ -76,7 +76,7 @@ def test_three_months_ago_is_the_same_fiscal_year_under_its_label_then() -> None
         (2, "eps", "FY2", "2015-03-31", "2016-03-31", 1.8, 0.1, 5),  # this year's FY1, three months ago
         (2, "eps", "FY1", "2015-06-30", "2016-03-31", 2.0, 0.1, 5),
     ]
-    e = be.Estimates(_inputs(_consensus(rows)))
+    e = qe.Estimates(_inputs(_consensus(rows)))
     assert e.same_year_mean("eps", "FY1", 3).loc[DAY, 2] == pytest.approx(1.8)
 
 
@@ -90,9 +90,27 @@ def test_an_actual_counts_only_once_announced_and_in_the_dates_shares() -> None:
             "announced_at": pd.to_datetime(["2015-02-10", "2015-07-15"]),  # the second after the date
         }
     )
-    value, end = be.Estimates(_inputs(_consensus([]), actuals=actuals)).actual("eps")
+    value, end = qe.Estimates(_inputs(_consensus([]), actuals=actuals)).actual("eps")
     assert value.loc[DAY, 1] == pytest.approx(1.5)  # FY2014's 3.0, quoted before the split
     assert end.loc[DAY, 1] == (pd.Timestamp("2014-12-31") - pd.Timestamp(0)).days
+
+
+@pytest.mark.parametrize("order", [[0, 1, 2], [2, 1, 0], [1, 2, 0]])
+def test_years_announced_together_give_the_latest_year_whatever_the_rows_order(order: list[int]) -> None:
+    # LSEG back-filled some companies' early years with one announcement time (2001-2003 all "announced" on
+    # 2004-09-01): the latest of them is the last reported year, however the rows arrive from the cache
+    actuals = pd.DataFrame(
+        {
+            "listing_id": [2, 2, 2],
+            "measure": ["cfps", "cfps", "cfps"],
+            "period_end": pd.to_datetime(["2012-12-31", "2013-12-31", "2014-12-31"]),
+            "value": [1.0, 2.0, 3.0],
+            "announced_at": pd.to_datetime(["2015-03-01 10:00"] * 3),
+        }
+    ).iloc[order]
+    value, end = qe.Estimates(_inputs(_consensus([]), actuals=actuals)).actual("cfps")
+    assert value.loc[DAY, 2] == pytest.approx(3.0)
+    assert end.loc[DAY, 2] == (pd.Timestamp("2014-12-31") - pd.Timestamp(0)).days
 
 
 def test_fewer_than_two_estimates_leave_a_factor_missing_and_breadth_is_bounded() -> None:
@@ -112,7 +130,7 @@ def test_fewer_than_two_estimates_leave_a_factor_missing_and_breadth_is_bounded(
             "down": [0, 0],
         }
     )
-    f = be.eps_factors(be.Estimates(_inputs(_consensus(rows), revisions=revisions)))
+    f = qe.eps_factors(qe.Estimates(_inputs(_consensus(rows), revisions=revisions)))
     assert np.isnan(f["eps_uncertainty"].to_numpy(dtype=float)[0, 0]) and f["eps_uncertainty"].loc[
         DAY, 2
     ] == pytest.approx(0.2)
@@ -129,11 +147,11 @@ def test_the_revisions_composite_needs_six_months_of_estimates() -> None:
         (lid, "eps", p, str(end.date()), "2015-12-31", 2.0, 0.1, 4)
         for lid in (1, 2)
         for p in ("FY1", "FY2")
-        for end in be.month_ends(DATES, 0).append([be.month_ends(DATES, k) for k in range(1, 6)])
-        if not (lid == 1 and end == be.month_ends(DATES, 5)[0])  # listing 1 lacks the sixth month
+        for end in qe.month_ends(DATES, 0).append([qe.month_ends(DATES, k) for k in range(1, 6)])
+        if not (lid == 1 and end == qe.month_ends(DATES, 5)[0])  # listing 1 lacks the sixth month
     ]
     members = pd.DataFrame({1: [True], 2: [True]}, index=DATES)
-    out = be.revisions_composite(_inputs(_consensus(rows)), members)
+    out = qe.revisions_composite(_inputs(_consensus(rows)), members)
     assert np.isnan(out.to_numpy(dtype=float)[0, 0])
 
 
@@ -145,7 +163,7 @@ def test_a_consensus_revision_is_the_same_fiscal_years_move_over_the_price() -> 
         (2, "eps", "FY1", "2015-06-30", "2015-12-31", 2.2, 0.1, 5),
         (2, "eps", "FY2", "2015-06-30", "2016-12-31", 2.8, 0.1, 5),
     ]
-    e = be.Estimates(_inputs(_consensus(rows)))
+    e = qe.Estimates(_inputs(_consensus(rows)))
     assert e.consensus_revision("FY1", 0).loc[DAY, 2] == pytest.approx(0.2)
     assert e.consensus_revision("FY2", 0).loc[DAY, 2] == pytest.approx(-0.2)
     assert e.consensus_breadth(0).loc[DAY, 2] == pytest.approx(0.5 * 0.2 / 20 + 0.5 * -0.2 / 20)
@@ -161,7 +179,7 @@ def test_a_new_fiscal_year_or_a_split_is_not_a_revision() -> None:
         (1, "eps", "FY1", "2015-05-31", "2015-12-31", 4.0, 0.2, 5),
         (1, "eps", "FY1", "2015-06-30", "2015-12-31", 2.0, 0.1, 5),
     ]
-    e = be.Estimates(_inputs(_consensus(rows)))
+    e = qe.Estimates(_inputs(_consensus(rows)))
     assert e.consensus_revision("FY1", 0).loc[DAY, 2] == pytest.approx(0.1)  # 2.6 - 2.5, not 2.6 - 1.0
     assert e.consensus_revision("FY1", 0).loc[DAY, 1] == pytest.approx(0.0)
 
@@ -173,10 +191,29 @@ def test_consensus_revisions_need_two_estimates_and_weigh_four_months() -> None:
     for m, v in zip(months, fy1, strict=True):
         rows += [(2, "eps", "FY1", m, "2015-12-31", v, 0.1, 5), (2, "eps", "FY2", m, "2016-12-31", 3.0, 0.1, 5)]
         rows += [(1, "eps", "FY1", m, "2015-12-31", 2.0, 0.1, 1), (1, "eps", "FY2", m, "2016-12-31", 3.0, 0.1, 1)]
-    f = be.consensus_revision_factors(_inputs(_consensus(rows)))
-    assert set(f) == set(be.CONSENSUS_REVISION_FACTORS)
+    f = qe.consensus_revision_factors(_inputs(_consensus(rows)))
+    assert set(f) == set(qe.CONSENSUS_REVISION_FACTORS)
     one = 0.5 * 0.1 / 20  # FY2 unchanged: half the FY1 move over the price of 20
     assert f["consensus_revisions_1_mth"].loc[DAY, 2] == pytest.approx(one)
     four = 0.5 * (0.4 * 0.1 + 0.3 * 0.2 + 0.2 * 0.0 + 0.1 * 0.1) / 20
     assert f["consensus_revisions_4_mth"].loc[DAY, 2] == pytest.approx(four)
     assert f["consensus_revisions_1_mth"][1].isna().all()  # one estimate behind it: no value
+
+
+def test_a_revision_count_loaded_long_after_its_month_end_is_not_read() -> None:
+    # LSEG answers today's counts whatever date is asked: a count loaded years later is a snapshot, not its date's
+    rows = pd.DataFrame(
+        {
+            "listing_id": [1, 2, 3, 4],
+            "measure": "eps",
+            "period": "FY1",
+            "as_of_date": pd.to_datetime(["2015-06-30", "2026-10-31", "2026-10-31", "2026-10-31"]),
+            "up": [21, 4, 2, 1],
+            "down": [0, 1, 0, 0],
+            "loaded_at": pd.to_datetime(["2026-11-17", "2026-11-03", "2026-12-02", "2026-10-30"]),
+        }
+    )
+    live = qe.live_revisions(rows)
+    # asked 3 days after: kept; 32 days after, or before the date (a count of an earlier day): not its month end's
+    assert live["listing_id"].tolist() == [2]
+    assert "loaded_at" not in live.columns

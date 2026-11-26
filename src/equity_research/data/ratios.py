@@ -152,7 +152,8 @@ def ratio_panel(fund: pd.DataFrame, close: pd.DataFrame, factor: pd.DataFrame) -
     out["RE/TA"] = _div(f["retained_earnings"], f["total_assets"])
     out["EBIT/TA"] = _div(f["ebit"], f["total_assets"])
     out["Book Equity/TL"] = _div(f["equity"], f["total_liabilities"])
-    out["EBIT/EV"] = _div(f["ebit"], ev)
+    # a yield over a negative EV (cash above value and debt) flips its sign: a profitable cash box would rank dearest
+    out["EBIT/EV"] = _div(f["ebit"], ev.where(ev > 0))
     out["ROC"] = _div(f["ebit"], nwc + f["fixed_assets"])
     out["Gross Profit/TA"] = _div(f["gross_profit"], f["total_assets"])
     cash_flow, capex = _optional(f, "operating_cash_flow"), _optional(f, "capex")

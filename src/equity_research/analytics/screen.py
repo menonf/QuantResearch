@@ -23,7 +23,7 @@ from equity_research.data.cache import ResearchCache
 from equity_research.data.reads import id_list
 from equity_research.data.universe import UniverseData
 from equity_research.strategies import factors as fx
-from equity_research.strategies.factor_strategy import factor_scores
+from equity_research.strategies.factor_strategy import StrategyConfig, cache_factors, factor_scores
 from equity_research.strategies.runs import Snapshot
 from research_core.data.calendars import TRADING_DAYS
 
@@ -53,7 +53,9 @@ def screen(
     day = pd.Timestamp(on) if on is not None else data.rebalances.max()
     if day not in data.rebalances:
         raise ValueError(f"{day.date()} is not a decision date of this data; use include_last_day or a month end")
-    parts = {name: factor_scores(data, name) for name in factors}
+    # a factor read from the cache (analysts' consensus revisions) is built as a strategy would build it
+    extra = cache_factors(cache, data, StrategyConfig(family="screen", factors=tuple(dict(factors).items())))
+    parts = {name: factor_scores(data, name, extra=extra) for name in factors}
     mix = pd.Series(fx.combine(parts, dict(factors)).loc[day])
     return _ranked(cache, data, day, mix, pd.DataFrame({name: panel.loc[day] for name, panel in parts.items()}))
 

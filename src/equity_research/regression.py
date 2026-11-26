@@ -7,7 +7,7 @@
 Each phase of the machine-learning plan adds modules beside the existing research, under the rule that nothing
 existing changes. This checks it:
 
-1. **Strategies** - each family behind notebooks 3.1-3.6 and 4.1 (:data:`FAMILIES`): its latest registered run's
+1. **Strategies** - each family behind notebooks 3.1-3.7 and 4.1 (:data:`FAMILIES`): its latest registered run's
    configuration is backtested again by its own runner (:func:`runs.rerun`: no engine, so no trial is added), and its
    key metrics (:data:`KEYS`) are kept.
 2. **Risk model** - notebook 4.2's model of the S&P 1500 is rebuilt the same way and its factor summary and average
@@ -33,15 +33,17 @@ from equity_research.data.cache import ResearchCache
 from equity_research.data.universe import load_universe_data
 from equity_research.strategies.runs import load_run, rerun
 
-#: The registry families of the existing strategy notebooks (3.1-3.6) and the factor dashboard (4.1).
+#: The registry families of the existing strategy notebooks (3.1-3.7) and the factor dashboard (4.1).
 FAMILIES = (
     "single_factor_ls",
     "multi_factor_ls",
     "multi_factor_lo",
     "value_only_lo",
     "garp_sp500",
-    "barings_qgarp",
+    "qgarp",
     "sp500_factor_dashboard",
+    "revised_lo",  # notebook 3.7's specification (its latest run is the FTSE All-Share's)
+    "revised_ls",  # notebook 3.4's rebuilt long-short book
 )
 #: The metrics kept for each strategy.
 KEYS = ("cagr", "vol", "sharpe", "max_drawdown", "turnover", "active_return", "tracking_error", "information_ratio")

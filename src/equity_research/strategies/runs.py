@@ -6,8 +6,8 @@
 
 ``research.run`` keeps every run's whole config with its family, so a run id is all a notebook needs to show any
 strategy: a factor mix (:class:`~equity_research.strategies.factor_strategy.StrategyConfig`), the S&P 500 GARP rules
-(:class:`~equity_research.strategies.garp.GarpConfig`) or Barings' QGARP
-(:class:`~equity_research.strategies.barings_garp.BaringsGarpConfig`). Which of the three a stored config is follows
+(:class:`~equity_research.strategies.garp.GarpConfig`) or the QGARP strategy
+(:class:`~equity_research.strategies.qgarp.QgarpConfig`). Which of the three a stored config is follows
 from its settings - only GARP has ``growth_count``, only QGARP ``fix_revisions_direction`` - and a setting added
 after the run takes its default, which is how the run was made.
 
@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from typing import Any, Protocol
 
 import pandas as pd
@@ -33,28 +33,29 @@ from sqlalchemy.engine import Engine
 from equity_research.data.cache import ResearchCache
 from equity_research.data.sectors import listing_sectors
 from equity_research.data.universe import UniverseData, load_universe_data
-from equity_research.strategies.barings_garp import (
-    COMPOSITES,
-    HISTORY_DAYS,
-    BaringsGarpConfig,
-    qgarp_book,
-    qgarp_scores,
-    run_barings_garp,
-)
+from equity_research.strategies.construction import risk_model_for
 from equity_research.strategies.factor_strategy import (
-    TRAIN_FROM,
     StrategyConfig,
-    learns,
+    cache_factors,
+    data_start,
     run_strategy,
     strategy_book,
     strategy_scores,
 )
 from equity_research.strategies.garp import GarpConfig, garp_book, garp_scores, run_garp, schedule
+from equity_research.strategies.qgarp import (
+    COMPOSITES,
+    HISTORY_DAYS,
+    QgarpConfig,
+    qgarp_book,
+    qgarp_scores,
+    run_qgarp,
+)
 from research_core.data.db import schema
 from research_core.engine.backtest import BacktestResult
 
 #: The three kinds of strategy a run can be.
-AnyConfig = StrategyConfig | GarpConfig | BaringsGarpConfig
+AnyConfig = StrategyConfig | GarpConfig | QgarpConfig
 #: How far before the day a snapshot's book starts, so its buffer holds what the strategy would really hold (GARP
 #: reselects twice a year, so a year always includes its last selection).
 BOOK_HISTORY = pd.DateOffset(years=1)
@@ -132,7 +133,7 @@ def config_from(payload: Mapping[str, Any]) -> AnyConfig:
     if "growth_count" in payload:
         kind = GarpConfig
     elif "fix_revisions_direction" in payload:
-        kind = BaringsGarpConfig
+        kind = QgarpConfig
     else:
         kind = StrategyConfig
     unknown = sorted(set(payload) - {f.name for f in fields(kind)})
@@ -243,8 +244,8 @@ def rerun(cache: ResearchCache, config: AnyConfig) -> RunResult:
     """The backtest of ``config`` again, by its own runner, without registering it (no engine: no trial added)."""
     if isinstance(config, GarpConfig):
         return run_garp(cache, config)
-    if isinstance(config, BaringsGarpConfig):
-        return run_barings_garp(cache, config)
+    if isinstance(config, QgarpConfig):
+        return run_qgarp(cache, config)
     return run_strategy(cache, config)
 
 
@@ -277,8 +278,8 @@ def registered_or_run(cache: ResearchCache, engine: Engine, config: AnyConfig) -
         result: RunResult
         if isinstance(config, GarpConfig):
             result = run_garp(cache, config, engine=engine)
-        elif isinstance(config, BaringsGarpConfig):
-            result = run_barings_garp(cache, config, engine=engine)
+        elif isinstance(config, QgarpConfig):
+            result = run_qgarp(cache, config, engine=engine)
         else:
             result = run_strategy(cache, config, engine=engine)
         run_id = result.run_id
@@ -293,7 +294,7 @@ def snapshot(cache: ResearchCache, config: AnyConfig, *, on: str | pd.Timestamp 
     book_from = end - BOOK_HISTORY
     if isinstance(config, GarpConfig):
         return _garp_snapshot(cache, config, book_from, end)
-    if isinstance(config, BaringsGarpConfig):
+    if isinstance(config, QgarpConfig):
         return _qgarp_snapshot(cache, config, book_from, end)
     return _factor_snapshot(cache, config, book_from, end)
 
@@ -324,12 +325,18 @@ def _on(panel: pd.DataFrame, day: pd.Timestamp) -> pd.Series:
 def _factor_snapshot(
     cache: ResearchCache, config: StrategyConfig, book_from: pd.Timestamp, end: pd.Timestamp
 ) -> Snapshot:
-    # a learned score is fitted on years of outcomes, as in the backtest
-    start = min(pd.Timestamp(TRAIN_FROM), book_from) if learns(config) else book_from
+    # a learned score is fitted on years of outcomes and the risk model needs its history, as in the backtest
+    start = pd.Timestamp(data_start(replace(config, start=book_from.strftime("%Y-%m-%d"))))
     data = _load(cache, config, start, end, rebalance=config.rebalance)
     day = data.rebalances.max()
-    score, parts = strategy_scores(data, config)
-    book = strategy_book(data, config, score, data.rebalances[data.rebalances >= book_from])
+    sectors = listing_sectors(cache, data.close.columns) if config.within_sectors else None
+    score, parts = strategy_scores(data, config, sectors=sectors, extra=cache_factors(cache, data, config))
+    model = (
+        risk_model_for(cache, data, price_vendors=config.price_vendors, fundamentals_vendor=config.fundamentals_vendor)
+        if config.construction == "tilted"
+        else None
+    )
+    book = strategy_book(data, config, score, data.rebalances[data.rebalances >= book_from], model=model)
     return Snapshot(
         config=config,
         day=day,
@@ -364,9 +371,7 @@ def _garp_snapshot(cache: ResearchCache, config: GarpConfig, book_from: pd.Times
     )
 
 
-def _qgarp_snapshot(
-    cache: ResearchCache, config: BaringsGarpConfig, book_from: pd.Timestamp, end: pd.Timestamp
-) -> Snapshot:
+def _qgarp_snapshot(cache: ResearchCache, config: QgarpConfig, book_from: pd.Timestamp, end: pd.Timestamp) -> Snapshot:
     data = _load(cache, config, book_from, end, history_days=HISTORY_DAYS)
     day = data.rebalances.max()
     _, comp, score = qgarp_scores(cache, data, config)
