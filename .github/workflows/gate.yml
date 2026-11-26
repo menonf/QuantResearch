@@ -1,0 +1,63 @@
+# The gate of CONTRIBUTING.md on every push to main and every pull request into it: ruff (format and lint), mypy
+# (strict, over src and tests) and the unit tests, which need no database and no network. The integration tests need
+# a SQL Server and run on a developer's machine (CLAUDE.md, "Gate").
+#
+# Dependencies come from uv.lock, every group (`--locked` fails when the lock is out of step with pyproject.toml):
+# mypy type-checks the optional modules too (torch, transformers, lightgbm), so they must be installed. On Linux torch
+# is PyPI's wheel; its CUDA index applies on Windows only (`[tool.uv.sources]`).
+
+name: Gate
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a newer push to the same branch or pull request makes a running check moot
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # the oldest Python the project supports (requires-python) and the one its machines run
+        python-version: [ "3.13", "3.14" ]
+
+    env:
+      # a runner has no keyring: every setting read from it is absent, as on a machine with nothing stored, and no
+      # test reaches a database or a vendor
+      PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up uv and Python ${{ matrix.python-version }}
+      uses: astral-sh/setup-uv@v7
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies (every group, as locked)
+      run: uv sync --locked --all-groups
+
+    - name: Format
+      run: uv run --no-sync ruff format --check .
+
+    - name: Lint
+      run: uv run --no-sync ruff check --output-format=github .
+
+    - name: Type check
+      run: uv run --no-sync mypy
+
+    - name: Unit tests
+      run: uv run --no-sync pytest -q

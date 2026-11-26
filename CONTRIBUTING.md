@@ -14,6 +14,62 @@ uv run pytest -m integration        # when the change touches the database: on a
 
 All four pass, the new behaviour has a test, and docstrings say *why* where the code cannot.
 
+## Continuous integration
+
+`.github/workflows/gate.yml` runs the first line of the gate - `ruff format --check`, `ruff check`, `mypy`, the unit
+tests - on every push to `main` and every pull request into it, on Python 3.13 and 3.14. It installs every dependency
+group exactly as `uv.lock` has it (`uv sync --locked --all-groups`, which fails when the lock is out of step with
+`pyproject.toml`) and runs with an empty keyring, so a test that needs a database, a vendor or a stored setting fails
+there. The integration tests need a SQL Server and stay on your machine.
+
+**On GitHub, by hand:** *Actions* -> *Gate* -> *Run workflow*, or from a terminal (the workflow must be on `main`
+for either; the run can then be on any branch):
+
+```sh
+gh workflow run gate.yml --ref <branch>
+gh run watch                                     # follow it
+```
+
+**On your machine, the workflow itself** - in a Linux container, as GitHub runs it, with [act](https://nektosact.com).
+It needs:
+
+* **Docker** (Docker Desktop on Windows or macOS, in Linux-container mode), running;
+* **act** 0.2.98 or later (earlier versions cannot run the Node 24 actions the workflow uses):
+  `winget install nektos.act` on Windows, `brew install act` on macOS; open a new terminal afterwards so it is on
+  the `PATH`.
+
+From the repository's root (one line, for any shell):
+
+```sh
+act workflow_dispatch -W .github/workflows/gate.yml -j gate -P ubuntu-latest=catthehacker/ubuntu:act-latest --matrix python-version:3.14
+```
+
+* `--matrix python-version:3.14` runs one Python version; leave it out to run both, one after the other.
+* `-P ubuntu-latest=...` names the image act runs the job in (its medium Ubuntu image), so it does not ask.
+* `act -l -W .github/workflows/gate.yml` lists the jobs without running anything.
+* What runs is your working copy, uncommitted changes included: act copies it into the container, leaving out what
+  `.gitignore` names (`.venv/`, `data/`).
+* Never add `--bind`: it mounts the folder instead of copying it, and the workflow's `uv sync` would replace your
+  `.venv` with a Linux one.
+* No GitHub token is needed. The image (2.3 GB) is downloaded once; every run installs the dependencies afresh in a
+  new container - on Linux, torch brings about 3 GB of CUDA libraries. Measured on 2026-11-26 (Python 3.14): install
+  3 min 40 s, mypy 1 min 20 s, unit tests 50 s - about seven minutes in all.
+
+**On your machine, without Docker** - the same steps, on your own operating system (on Windows, torch is its CUDA
+build): `uv sync --locked` makes `.venv` exactly the lock, removing anything installed by hand.
+
+```sh
+export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring   # an empty keyring, as on the runner (optional)
+uv sync --locked --all-groups
+uv run --no-sync ruff format --check .
+uv run --no-sync ruff check .
+uv run --no-sync mypy
+uv run --no-sync pytest -q
+```
+
+In PowerShell, set the variable with `$env:PYTHON_KEYRING_BACKEND = "keyring.backends.null.Keyring"` and run the
+commands one per line (Windows PowerShell 5.1 has no `&&`).
+
 ## Packages
 
 * **`research_core` imports no asset-class package.** What it offers must work for any instrument: an id, a
